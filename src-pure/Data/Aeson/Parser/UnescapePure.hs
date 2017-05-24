@@ -164,18 +164,11 @@ unescapeText' bs = runText $ \done -> do
 
       f dest (pos, StateU3 w') c =
         let w = decodeHex c in
-        let u = w' .|. w in
-
         -- Get next state based on surrogates.
-        let st
-              | u >= 0xd800 && u <= 0xdbff = -- High surrogate.
-                StateS0 u
-              | u >= 0xdc00 && u <= 0xdfff = -- Low surrogate.
-                throwDecodeError
-              | otherwise =
-                StateNone
-        in
-        writeAndReturn dest pos (C.unsafeChr u) st
+        case w' .|. w of
+          u | u >= 0xd800 && u <= 0xdbff -> return (pos, StateS0 u) -- High surrogate.
+            | u >= 0xdc00 && u <= 0xdfff -> throwDecodeError -- Low surrogate.
+            | otherwise -> writeAndReturn dest pos (C.unsafeChr u) StateNone
 
       -- Handle surrogates.
       f _ (pos, StateS0 u) 92 = return (pos, StateS1 u) -- Backslash
