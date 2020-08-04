@@ -1,10 +1,11 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -25,7 +26,7 @@
 
 module Data.Aeson.Types.Generic
     (
-      IsRecord(..)
+      IsRecord
     , AllNullary
     , Tagged2(..)
     , True
@@ -34,9 +35,9 @@ module Data.Aeson.Types.Generic
     , Zero
     , One
     , ProductSize(..)
+    , (:*)(..)
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import GHC.Generics
@@ -44,12 +45,8 @@ import GHC.Generics
 --------------------------------------------------------------------------------
 
 class IsRecord (f :: * -> *) isRecord | f -> isRecord
-  where
-    isUnary :: f a -> Bool
-    isUnary = const True
 
 instance (IsRecord f isRecord) => IsRecord (f :*: g) isRecord
-  where isUnary = const False
 #if MIN_VERSION_base(4,9,0)
 instance OVERLAPPING_ IsRecord (M1 S ('MetaSel 'Nothing u ss ds) f) False
 #else
@@ -61,7 +58,6 @@ instance IsRecord Par1 True
 instance IsRecord (Rec1 f) True
 instance IsRecord (f :.: g) True
 instance IsRecord U1 False
-  where isUnary = const False
 
 --------------------------------------------------------------------------------
 
@@ -80,6 +76,7 @@ instance AllNullary (Rec1 f) False
 instance AllNullary U1 True
 
 newtype Tagged2 (s :: * -> *) b = Tagged2 {unTagged2 :: b}
+  deriving Functor
 
 --------------------------------------------------------------------------------
 
@@ -112,3 +109,10 @@ instance (ProductSize a, ProductSize b) => ProductSize (a :*: b) where
 
 instance ProductSize (S1 s a) where
     productSize = Tagged2 1
+
+--------------------------------------------------------------------------------
+
+-- | Simple extensible tuple type to simplify passing around many parameters.
+data a :* b = a :* b
+
+infixr 1 :*

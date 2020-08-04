@@ -1,3 +1,4 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE RecordWildCards #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
@@ -5,12 +6,10 @@
 
 module Compare.JsonBuilder () where
 
-import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding ((<>))
 
 import Data.Json.Builder
 import Data.Monoid ((<>))
-import Prelude hiding (id)
 import Twitter
 
 instance JsObject Metadata where

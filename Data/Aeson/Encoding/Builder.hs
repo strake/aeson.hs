@@ -1,6 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
-
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TupleSections #-}
 -- |
 -- Module:      Data.Aeson.Encoding.Builder
 -- Copyright:   (c) 2011 MailRank, Inc.
@@ -36,7 +36,6 @@ module Data.Aeson.Encoding.Builder
     , ascii5
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Data.Aeson.Internal.Time
@@ -45,8 +44,8 @@ import Data.ByteString.Builder as B
 import Data.ByteString.Builder.Prim as BP
 import Data.ByteString.Builder.Scientific (scientificBuilder)
 import Data.Char (chr, ord)
-import Data.Monoid ((<>))
 import Data.Scientific (Scientific, base10Exponent, coefficient)
+import Data.Text.Encoding (encodeUtf8BuilderEscaped)
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (Day(..), toGregorian)
 import Data.Time.LocalTime
@@ -54,20 +53,6 @@ import Data.Word (Word8)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Text as T
 import qualified Data.Vector as V
-
-#if MIN_VERSION_bytestring(0,10,4)
-import Data.Text.Encoding (encodeUtf8BuilderEscaped)
-#else
-import Data.Bits ((.&.))
-import Data.Text.Internal (Text(..))
-import Data.Text.Internal.Unsafe.Shift (shiftR)
-import Foreign.Ptr (minusPtr, plusPtr)
-import Foreign.Storable (poke)
-import qualified Data.ByteString.Builder.Internal as B
-import qualified Data.ByteString.Builder.Prim.Internal as BP
-import qualified Data.Text.Array as A
-import qualified Data.Text.Internal.Encoding.Utf16 as U16
-#endif
 
 -- | Encode a JSON value to a "Data.ByteString" 'B.Builder'.
 --
@@ -147,7 +132,7 @@ c2w c = fromIntegral (ord c)
 -- | Encode a JSON number.
 scientific :: Scientific -> Builder
 scientific s
-    | e < 0     = scientificBuilder s
+    | e < 0 || e > 1024 = scientificBuilder s
     | otherwise = B.integerDec (coefficient s * 10 ^ e)
   where
     e = base10Exponent s
@@ -215,7 +200,7 @@ timeOfDay64 (TOD h m s)
     !(T mh ml)  = twoDigits m
     !(T sh sl)  = twoDigits (fromIntegral real)
     (real,frac) = s `quotRem` pico
-    showFrac = (\x -> ('.', x)) >$< (BP.liftFixedToBounded BP.char7 >*< trunc12)
+    showFrac = ('.',) >$< (BP.liftFixedToBounded BP.char7 >*< trunc12)
     trunc12 = (`quotRem` micro) >$<
               BP.condB (\(_,y) -> y == 0) (fst >$< trunc6) (digits6 >*< trunc6)
     digits6 = ((`quotRem` milli) . fromIntegral) >$< (digits3 >*< digits3)
@@ -268,66 +253,3 @@ twoDigits a     = T (digit hi) (digit lo)
 
 digit :: Int -> Char
 digit x = chr (x + 48)
-
-#if !(MIN_VERSION_bytestring(0,10,4))
--- | Encode text using UTF-8 encoding and escape the ASCII characters using
--- a 'BP.BoundedPrim'.
---
--- Use this function is to implement efficient encoders for text-based formats
--- like JSON or HTML.
-{-# INLINE encodeUtf8BuilderEscaped #-}
--- TODO: Extend documentation with references to source code in @blaze-html@
--- or @aeson@ that uses this function.
-encodeUtf8BuilderEscaped :: BP.BoundedPrim Word8 -> Text -> B.Builder
-encodeUtf8BuilderEscaped be =
-    -- manual eta-expansion to ensure inlining works as expected
-    \txt -> B.builder (mkBuildstep txt)
-  where
-    bound = max 4 $ BP.sizeBound be
-
-    mkBuildstep (Text arr off len) !k =
-        outerLoop off
-      where
-        iend = off + len
-
-        outerLoop !i0 br@(B.BufferRange op0 ope)
-          | i0 >= iend       = k br
-          | outRemaining > 0 = goPartial (i0 + min outRemaining inpRemaining)
-          -- TODO: Use a loop with an integrated bound's check if outRemaining
-          -- is smaller than 8, as this will save on divisions.
-          | otherwise        = return $ B.bufferFull bound op0 (outerLoop i0)
-          where
-            outRemaining = (ope `minusPtr` op0) `div` bound
-            inpRemaining = iend - i0
-
-            goPartial !iendTmp = go i0 op0
-              where
-                go !i !op
-                  | i < iendTmp = case a of
-                      a | a <= 0x7F ->
-                          BP.runB be (fromIntegral a) op >>= go (i + 1)
-                        | 0xC2 <= a && a <= 0xDF -> do
-                            poke8 0 a
-                            poke8 1 b
-                            go (i + 2) (op `plusPtr` 2)
-                        | 0xE0 <= a && a <= 0xEF -> do
-                            poke8 0 a
-                            poke8 1 b
-                            poke8 2 c
-                            go (i + 3) (op `plusPtr` 3)
-                        | otherwise -> do
-                            poke8 0 a
-                            poke8 1 b
-                            poke8 2 c
-                            poke8 3 d
-                            go (i + 4) (op `plusPtr` 4)
-                  | otherwise =
-                      outerLoop i (B.BufferRange op ope)
-                  where
-                    poke8 j v = poke (op `plusPtr` j) (fromIntegral v :: Word8)
-                    a = A.unsafeIndex arr i
-                    b = A.unsafeIndex arr (i+1)
-                    c = A.unsafeIndex arr (i+2)
-                    d = A.unsafeIndex arr (i+3)
-
-#endif

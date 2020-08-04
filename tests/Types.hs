@@ -4,19 +4,21 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Types (module Types) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Math.NumberTheory.Logarithms (intLog2)
+import Control.Applicative ((<$>))
 import Data.Data
 import Data.Functor.Compose (Compose (..))
 import Data.Functor.Identity (Identity (..))
 import Data.Hashable (Hashable (..))
+import Data.Semigroup (Option)
 import Data.Text
 import Data.Time (Day (..), fromGregorian)
 import GHC.Generics
@@ -104,6 +106,10 @@ deriving instance Data (GADT String)
 deriving instance Eq   (GADT a)
 deriving instance Show (GADT a)
 
+newtype MaybeField = MaybeField { maybeField :: Maybe Int }
+newtype OptionField = OptionField { optionField :: Option Int }
+  deriving (Eq, Show)
+
 deriving instance Generic Foo
 deriving instance Generic UFoo
 deriving instance Generic OneConstructor
@@ -113,9 +119,8 @@ deriving instance Generic (Sum4 a b c d)
 deriving instance Generic (Approx a)
 deriving instance Generic Nullary
 deriving instance Generic (SomeType a)
-#if __GLASGOW_HASKELL__ >= 706
 deriving instance Generic1 SomeType
-#endif
+deriving instance Generic OptionField
 deriving instance Generic EitherTextInt
 
 failure :: Show a => String -> String -> a -> Property
@@ -146,7 +151,7 @@ instance Hashable a => Hashable (LogScaled a) where
     hashWithSalt salt (LogScaled a) = hashWithSalt salt a
 
 instance Arbitrary a => Arbitrary (LogScaled a) where
-    arbitrary = fmap LogScaled $ scale (\x -> intLog2 $ x + 1) arbitrary
+    arbitrary = LogScaled <$> scale (\x -> intLog2 $ x + 1) arbitrary
     shrink = fmap LogScaled . shrink . getLogScaled
 
 instance ToJSON a => ToJSON (LogScaled a) where

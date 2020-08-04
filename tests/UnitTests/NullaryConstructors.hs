@@ -1,4 +1,5 @@
-{-# LANGUAGE  OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-# OPTIONS_GHC -fno-warn-deprecations #-}
 
@@ -7,16 +8,16 @@ module UnitTests.NullaryConstructors
       nullaryConstructors
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Data.Aeson (decode, eitherDecode, fromEncoding, Value)
 import Data.Aeson.Internal (IResult (..), iparse)
 import Data.Aeson.Types (Parser)
 import Data.ByteString.Builder (toLazyByteString)
+import Data.Foldable (for_)
 import Data.Maybe (fromJust)
 import Encoders
-import Test.HUnit ((@=?), Assertion)
+import Test.Tasty.HUnit ((@=?), Assertion)
 import Types
 import qualified Data.ByteString.Lazy.Char8 as L
 
@@ -52,6 +53,10 @@ nullaryConstructors =
     -- Make sure that the old `"contents" : []' is still allowed
   , ISuccess C1 @=? parse thNullaryParseJSONTaggedObject          (dec "{\"tag\":\"c1\",\"contents\":[]}")
   , ISuccess C1 @=? parse gNullaryParseJSONTaggedObject           (dec "{\"tag\":\"c1\",\"contents\":[]}")
+
+  , for_ [("kC1", C1), ("kC2", C2), ("kC3", C3)] $ \(jkey, key) -> do
+      Right   jkey @=? gNullaryToJSONKey key
+      ISuccess key @=? parse gNullaryFromJSONKey jkey
   ]
   where
     enc = eitherDecode . toLazyByteString . fromEncoding

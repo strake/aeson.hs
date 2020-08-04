@@ -1,3 +1,4 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 -- |
 -- Module:      Data.Aeson.Parser
 -- Copyright:   (c) 2012-2016 Bryan O'Sullivan
@@ -33,10 +34,21 @@ module Data.Aeson.Parser
       json
     , value
     , jstring
+    , scientific
+    -- ** Handling objects with duplicate keys
+    , jsonWith
+    , jsonLast
+    , jsonAccum
+    , jsonNoDup
     -- * Strict parsers
     -- $strict
     , json'
     , value'
+    -- ** Handling objects with duplicate keys
+    , jsonWith'
+    , jsonLast'
+    , jsonAccum'
+    , jsonNoDup'
     -- * Decoding without FromJSON instances
     , decodeWith
     , decodeStrictWith
@@ -44,9 +56,8 @@ module Data.Aeson.Parser
     , eitherDecodeStrictWith
     ) where
 
-import Prelude ()
 
-import Data.Aeson.Parser.Internal (decodeStrictWith, decodeWith, eitherDecodeStrictWith, eitherDecodeWith, json, json', jstring, value, value')
+import Data.Aeson.Parser.Internal
 
 -- $lazy
 --

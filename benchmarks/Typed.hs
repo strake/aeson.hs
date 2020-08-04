@@ -1,6 +1,7 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
 module Main (main) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Criterion.Main
@@ -13,4 +14,7 @@ main = defaultMain [
     Generic.benchmarks
   , Manual.benchmarks
   , TH.benchmarks
+  , Generic.decodeBenchmarks
+  , Manual.decodeBenchmarks
+  , TH.decodeBenchmarks
   ]

@@ -1,3 +1,4 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -6,13 +7,11 @@
 
 module Compare.BufferBuilder () where
 
-import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding ((<>))
 
 import Data.BufferBuilder.Json
 import Data.Int (Int64)
 import Data.Monoid ((<>))
-import Prelude hiding (id)
 import Twitter
 import qualified Data.BufferBuilder.Utf8 as UB
 

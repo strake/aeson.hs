@@ -1,5 +1,5 @@
 name:            aeson
-version:         1.2.0.0
+version:         1.5.2.0
 license:         BSD3
 license-file:    LICENSE
 category:        Text, Web, JSON
@@ -8,7 +8,7 @@ copyright:       (c) 2011-2016 Bryan O'Sullivan
 author:          Bryan O'Sullivan <bos@serpentine.com>
 maintainer:      Adam Bergmark <adam@bergmark.nl>
 stability:       experimental
-tested-with:     GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.1
+tested-with:     GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.2, GHC == 8.2.2, GHC == 8.4.4, GHC == 8.6.5, GHC == 8.8.3, GHC == 8.10.1
 synopsis:        Fast JSON parsing and encoding
 cabal-version:   >= 1.10
 homepage:        https://github.com/bos/aeson
@@ -20,20 +20,6 @@ description:
     .
     To get started, see the documentation for the @Data.Aeson@ module
     below.
-    .
-    Parsing performance on a late 2013 MacBook Pro (2.6GHz Core i7),
-    running 64-bit GHC 7.10.1, for mostly-English tweets from Twitter's
-    JSON search API:
-    .
-    * 6.4 KB payloads, English: 7570 msg\/sec (47.6 MB\/sec)
-    .
-    * 14.6 KB payloads, Japanese: 3261 msg\/sec (46.6 MB\/sec)
-    .
-    Encoding performance on the same machine and data:
-    .
-    * 6.4 KB payloads, English: 22738 msg\/sec (142.9 MB\/sec)
-    .
-    * 14.6 KB payloads, Japanese: 15911 msg\/sec (227.4 MB\/sec)
     .
     (A note on naming: in Greek mythology, Aeson was the father of Jason.)
 
@@ -49,13 +35,11 @@ extra-source-files:
     benchmarks/json-data/*.json
     cbits/*.c
     changelog.md
-    examples/*.cabal
-    examples/*.hs
-    examples/Twitter/*.hs
     ffi/Data/Aeson/Parser/*.hs
     include/*.h
     tests/JSONTestSuite/test_parsing/*.json
     tests/JSONTestSuite/test_transform/*.json
+    tests/golden/*.expected
     pure/Data/Aeson/Parser/*.hs
 
 flag developer
@@ -89,10 +73,12 @@ library
     Data.Aeson.Text
     Data.Aeson.Types
     Data.Aeson.TH
+    Data.Aeson.QQ.Simple
 
     Data.Aeson.Encoding.Internal
     Data.Aeson.Internal
     Data.Aeson.Internal.Time
+    Data.Aeson.Parser.Internal
 
   -- Deprecated modules
   exposed-modules:
@@ -101,7 +87,6 @@ library
   other-modules:
     Data.Aeson.Encoding.Builder
     Data.Aeson.Internal.Functions
-    Data.Aeson.Parser.Internal
     Data.Aeson.Parser.Unescape
     Data.Aeson.Parser.Time
     Data.Aeson.Types.FromJSON
@@ -112,42 +97,55 @@ library
     Data.Attoparsec.Time
     Data.Attoparsec.Time.Internal
 
+  -- GHC bundled libs
   build-depends:
-    attoparsec >= 0.13.0.1,
-    base >= 4.5 && < 5,
-    base-compat >= 0.9.1 && < 0.10,
-    containers >= 0.4.2,
-    deepseq >= 1.3 && < 1.5,
-    dlist >= 0.6,
-    ghc-prim >= 0.2,
-    hashable >= 1.1.2.0,
-    scientific >= 0.3.4.7 && < 0.4,
-    tagged >=0.8.3 && <0.9,
-    template-haskell >= 2.7,
-    text >= 1.1.1.0,
-    time >= 1.1.1.4,
-    time-locale-compat >= 0.1.1 && < 0.2,
-    unordered-containers >= 0.2.5.0 && < 0.3,
-    uuid-types >= 1.0.3 && <1.1,
-    vector >= 0.8
+    base             >= 4.7.0.0 && < 5,
+    bytestring       >= 0.10.4.0 && < 0.11,
+    containers       >= 0.5.5.1 && < 0.7,
+    deepseq          >= 1.3.0.0 && < 1.5,
+    ghc-prim         >= 0.2     && < 0.7,
+    template-haskell >= 2.9.0.0 && < 2.17,
+    text             >= 1.2.3.0 && < 1.3,
+    time             >= 1.4     && < 1.11
 
-  if flag(bytestring-builder)
-    build-depends: bytestring >= 0.9.2 && < 0.10.4,
-                   bytestring-builder >= 0.10.4 && < 1
-  else
-    build-depends: bytestring >= 0.10.4 && < 0.11
+  if impl(ghc >= 8.0)
+    build-depends: bytestring >= 0.10.8.1
+
+  -- Compat
+  build-depends:
+    base-compat-batteries >= 0.10.0   && < 0.12,
+    time-compat           >= 1.9.2.2  && < 1.10
+
+  if !impl(ghc >= 8.6)
+    build-depends:
+      contravariant >=1.4.1    && <1.6
 
   if !impl(ghc >= 8.0)
     -- `Data.Semigroup` and `Control.Monad.Fail` and `Control.Monad.IO.Class` are available in base only since GHC 8.0 / base 4.9
     build-depends:
-      semigroups >= 0.18.2 && < 0.19,
-      transformers >= 0.2.2.0,
-      transformers-compat >= 0.3,
+      semigroups          >= 0.18.5  && < 0.20,
+      transformers        >= 0.3.0.0 && < 0.6,
+      transformers-compat >= 0.6.2   && < 0.7,
       fail == 4.9.*
 
   if !impl(ghc >= 7.10)
     -- `Numeric.Natural` is available in base only since GHC 7.10 / base 4.8
-    build-depends: nats >= 1 && < 1.2
+    build-depends: nats >= 1.1.1 && < 1.2,
+                   void >= 0.7.2 && < 0.8
+
+  -- Other dependencies
+  build-depends:
+    attoparsec           >= 0.13.2.2 && < 0.14,
+    dlist                >= 0.8.0.4  && < 0.9,
+    hashable             >= 1.2.7.0  && < 1.4,
+    primitive            >= 0.7.0.1  && < 0.8,
+    scientific           >= 0.3.6.2  && < 0.4,
+    tagged               >= 0.8.6    && < 0.9,
+    th-abstraction       >= 0.2.8.0  && < 0.4,
+    these                >= 1.1      && < 1.2,
+    unordered-containers >= 0.2.10.0 && < 0.3,
+    uuid-types           >= 1.0.3    && < 1.1,
+    vector               >= 0.12.0.1 && < 0.13
 
   ghc-options: -Wall
 
@@ -170,7 +168,7 @@ library
     hs-source-dirs: ffi
     other-modules: Data.Aeson.Parser.UnescapeFFI
 
-test-suite tests
+test-suite aeson-tests
   default-language: Haskell2010
   type: exitcode-stdio-1.0
   hs-source-dirs: tests ffi pure
@@ -190,42 +188,50 @@ test-suite tests
     Functions
     Instances
     Options
+    PropUtils
     Properties
+    PropertyGeneric
+    PropertyKeys
+    PropertyRoundTrip
+    PropertyRTFunctors
+    PropertyTH
     SerializationFormatSpec
     Types
     UnitTests
     UnitTests.NullaryConstructors
 
   build-depends:
-    HUnit,
-    QuickCheck >= 2.8 && <2.9.3,
+    QuickCheck >= 2.10.0.1 && < 2.15,
     aeson,
     integer-logarithms >= 1 && <1.1,
     attoparsec,
     base,
     base-compat,
-    base-orphans >= 0.5.3 && <0.7,
+    base-orphans >= 0.5.3 && <0.9,
     base16-bytestring,
     containers,
     directory,
     dlist,
+    Diff >= 0.4 && < 0.5,
     filepath,
-    generic-deriving >= 1.10 && < 1.12,
+    generic-deriving >= 1.10 && < 1.14,
     ghc-prim >= 0.2,
     hashable >= 1.2.4.0,
     scientific,
     tagged,
     template-haskell,
-    test-framework,
-    test-framework-hunit,
-    test-framework-quickcheck2,
+    tasty,
+    tasty-golden,
+    tasty-hunit,
+    tasty-quickcheck,
     text,
+    these,
     time,
-    time-locale-compat,
+    time-compat,
     unordered-containers,
     uuid-types,
     vector,
-    quickcheck-instances >=0.3.12
+    quickcheck-instances >= 0.3.23 && <0.4
 
   if flag(bytestring-builder)
     build-depends: bytestring >= 0.9 && < 0.10.4,
@@ -235,12 +241,13 @@ test-suite tests
 
   if !impl(ghc >= 8.0)
     build-depends:
-      semigroups >= 0.18.2 && < 0.19,
+      semigroups >= 0.18.2 && < 0.20,
       transformers >= 0.2.2.0,
       transformers-compat >= 0.3
 
   if !impl(ghc >= 7.10)
-    build-depends: nats >=1 && <1.2
+    build-depends: nats >=1 && <1.2,
+                   void >=0.7.2 && <0.8
 
   if impl(ghc >= 7.8)
     build-depends: hashable-time >= 0.2 && <0.3

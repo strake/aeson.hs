@@ -1,9 +1,0 @@
-resolver: lts-8.1
-packages:
-- '.'
-- attoparsec-iso8601
-flags:
-  aeson:
-    fast: true
-  attoparsec-iso8601:
-    fast: true

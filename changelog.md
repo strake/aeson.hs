@@ -1,10 +1,250 @@
 For the latest version of this document, please see [https://github.com/bos/aeson/blob/master/changelog.md](https://github.com/bos/aeson/blob/master/changelog.md).
 
+### 1.5.2.0
+
+* Add `Ord Value` instance, thanks to Oleg Grenrus.
+* Export `rejectUnknownFields` from `Data.Aeson`
+
+### 1.5.1.0
+
+* Add instances for `these`, thanks to Oleg Grenrus.
+
+## 1.5.0.0
+
+* Fix bug in `rejectUnknownFields` not respecting `fieldLabelModifier`, thanks to Markus Schirp.
+* `GFromJSON` members are no longer exported from `Data.Aeson(.Types)`, if you are using `gParseJSON` consider switching to `gParseJSON'`, thanks to Oleg Grenrus.
+* Aeson no longer accepts unescaped control characters, thanks to Oleg Grenrus.
+* Remove `CoerceText` since GHC >=7.8 has `Coercible`, thanks to Oleg Grenrus.
+* Rename the `GToJSON` class to `GToJSON'` and expose it, thanks to Oleg Grenrus.
+
+Closed tickets: https://github.com/bos/aeson/milestone/21
+
+
+#### 1.4.7.1
+
+* GHC 8.10 compatibility, thanks to Ryan Scott.
+
+### 1.4.7.0
+
+Long overdue release (once again), so there's quite a bit of stuff
+included even though it's a "minor" release. Big thanks to all the
+contributors, the project would not exist without you!
+
+Special thanks to Oleg Grenrus and Xia Li-Yao for reviewing tons
+of stuff.
+
+New stuff:
+
+* Add `rejectUnknownFields` to Options which rejects unknown fields on
+  deserialization. Useful to find errors during development, but
+  enabling this should be considered a breaking change as previously
+  accepted inputs may now be rejected. Thanks to rmanne.
+
+```
+instance FromJSON Foo where
+  parseJSON = gParseJSON defaultOptions { rejectUnknownFields = True }
+```
+
+* `FromJSON` instance of `Ratio a` now parses numbers in addtion to
+  standard `{numerator=..., denumerator=...}` encoding. Thanks to
+  Aleksey Khudyakov.
+
+* Add more information to parse errors, including a sample of the
+  surrounding text. Hopefully this will lead to less "Failed to read:
+  satisfy" confusion! Thanks to Sasha Bogicevic. We expect some
+  downstream test suites to break because of this, apologies in
+  advance. Hopefully you will like the improvement anyway :-)
+
+* Add `parseFail` to `Data.Aeson.Types`. `parseFail = fail` but
+  doesn't require users to know about `MonadFail`. Thanks to Colin
+  Woodbury.
+
+* Make Template Haskell type family detection smarter when deriving
+  `ToJSON1` instances, thanks to Ryan Scott.
+
+* Optimize string parsing for the common case of strings without
+  escapes, thanks to Yuras.
+
+
+Misc:
+
+* Clean up compiler warnings and switch from base-compat to
+  base-compat-batteries. Thanks to Colin Woodbury & Oleg Grenrus.
+
+* Clarification & fixes to documentation regarding treatment of Maybe fields, thanks to Roman Cheplyaka.
+
+* Add documentation for internal development workflows. Thanks to Guru
+  Devanla.
+
+* Drop support for GHC < 7.8. We've chosen to support older GHCs as
+  long as it doesn't prevent us from adding new features, but now it
+  does!  Thanks to Oleg Grenrus for the patch.
+
+* Allow generic-deriving 1.13 in test suite.
+
+* Some DRY fixes thanks to Mark Fajkus.
+
+### 1.4.6.0
+
+* Provide a clearer error message when a required tagKey for a constructor is missing, thanks to Guru Devanla.
+  The error message now looks like this: `Error in $: parsing Types.SomeType failed, expected Object with key "tag" containing one of ["nullary","unary","product","record","list"], key "tag" not found`
+
+* Add `formatPath` and `formatRelativePath` functions to turn a `JSONPath` into a `String`, thanks to Robbie McMichael
+
+
+### 1.4.5.0
+
+* Expose `(<?>)`, `JSONPath` and `JSONPathElement(..)` from `Data.Aeson.Types`. Previously only available through internal modules. Thanks to Luke Clifton.
+
+* Support for base-compat 0.11, thanks to Ryan Scott.
+
+* Travis build for GHC 8.8, thanks to Oleg Grenrus.
+
+### 1.4.4.0
+
+**New features**:
+
+* Adds a parameterized parser `jsonWith` that can be used to choose how to handle duplicate keys in objects, thanks to Xia Li-Yao.
+
+* Add generic implementations of `FromJSONKey` and `ToJSONKey`, thanks to Xia Li-Yao. Example:
+
+```haskell
+data Foo = Bar
+  deriving Generic
+
+opts :: JSONKeyOptions
+opts = defaultJSONKeyOptions { keyModifier = toLower }
+
+instance ToJSONKey Foo where
+  toJSONKey = genericToJSONKey opts
+
+instance FromJSONKey Foo where
+  fromJSONKey = genericFromJSONKey opts
+```
+
+**Minor**:
+* aeson now uses `time-compat` instead of `time-locale-compat`, thanks to Oleg Grenrus.
+* Prepare for `MonadFail` breakages in GHC 8.8, thanks to Oleg Grenrus.
+* Require `bytestring >= 0.10.8.1` for newer GHCs to avoid build failures, thanks to Oleg Grenrus.
+* Support `primitive 0.7.*`, thanks to Adam Bergmark.
+* Allow `semigroups 0.19.*` and `hashable 1.3.*`, thanks to Oleg Grenrus.
+* Fix a typo in the error message when parsing `NonEmpty`, thanks to Colin Woodbury.
+* Document surprising behavior when using `omitNothingFields` with type variables, thanks to Xia Li-Yao.
+
+**Internal changes**:
+* Code cleanup by Oleg Grenrus
+* Fix dependencies of the benchmarks on older GHC's, thanks to Xia Li-Yao.
+
+### 1.4.3.0
+* Improve error messages for FromJSON in existing instances and GHC Generic implementation. Thanks to Xia Li-Yao & Igor Pashev.
+* Tweak error-reporting combinators and their documentation. Thanks to Xia Li-Yao.
+  * `typeMismatch` is now about comparing JSON types (i.e., the expected and actual names of the Value constructor).
+  * `withObject` and other `with*` combinators now also mention the JSON types they expect
+  * New `unexpected` and `prependFailure` combinators.
+* Add `Contravariant` `ToJSONKeyFunction` instance. Thanks to Oleg Grenrus.
+* Add `KeyValue` instance for `Object`. Thanks to Robert Hensing.
+* Improve performance when parsing certain large numbers, thanks to Oleg Grenrus.
+* Add `Data.Aeson.QQ.Simple` - A limited version of aeson-qq. Thanks to Oleg Grenrus.
+* Exposes internal helper functions like `<?>`, `JSONPath`, and `parseIndexedJSON` from `Data.Aeson` module. Thanks to Abid Uzair.
+* Better error messages when there are syntax errors parsing objects and arrays. Thanks to Fintan Halpenny.
+* Support building with `th-abstraction-0.3.0.0` or later. Thanks to Ryan Scott.
+
+### 1.4.2.0
+
+* Add `Data.Aeson.QQ.Simple` which is a simpler version of the `aeson-qq` package, it does not support interpolation, thanks to Oleg Grenrus.
+* Add `Contravariant ToJSONKeyFunction` instance, thanks to Oleg Grenrus.
+* Add `KeyValue Object` instance, thanks to Robert Hensing
+* Improved performance when parsing large numbers, thanks to Oleg Grenrus.
+
+### 1.4.1.0
+
+* Optimizations of generics, thanks to Rémy Oudompheng, here are some numbers for GHC 8.4:
+  * Compilation time: G/BigProduct.hs is 25% faster, G/BigRecord.hs is 2x faster.
+  * Runtime performance: BigRecord/toJSON/generic and BigProduct/encode/generic are more than 2x faster.
+* Added To/FromJSON instances for `Void` and Generics's `V1`, thanks to Will Yager
+* Added To/FromJSON instances for `primitive`'s `Array`, `SmallArray`, `PrimArray` and `UnliftedArray`, thanks to Andrew Thad.
+* Fixes handling of `UTCTime` wrt. leap seconds , thanks to Adam Schønemann
+* Warning and documentation fixes thanks to tom-bop, Gabor Greif, Ian Jeffries, and Mateusz Curyło.
+
+## 1.4.0.0
+
+This release introduces bounds on the size of `Scientific` numbers when they are converted to other arbitrary precision types that do not represent them efficiently in memory.
+
+This means that trying to decode a number such as `1e1000000000` into an `Integer` will now fail instead of using a lot of memory. If you need to represent large numbers you can add a newtype (preferably over `Scientific`) and providing a parser using `withScientific`.
+
+The following instances are affected by this:
+* `FromJSON Natural`
+* `FromJSONKey Natural`
+* `FromJSON Integer`
+* `FromJSONKey Integer`
+* `FromJSON NominalDiffTime`
+
+For the same reasons the following instances & functions have been removed:
+* Remove `FromJSON Data.Attoparsec.Number` instance. Note that `Data.Attoparsec.Number` is deprecated.
+* Remove deprecated `withNumber`, use `withScientific` instead.
+
+Finally, encoding integral values with large exponents now uses scientific notation, this saves space for large numbers.
+
+#### 1.3.1.1
+
+* Catch 0 denominators when parsing Ratio
+
+### 1.3.1.0
+
+* Fix bug in generically derived `FromJSON` instances that are using `unwrapUnaryRecords`, thanks to Xia Li-yao
+* Allow base-compat 0.10.*, thanks to Oleg Grenrus
+
+## 1.3.0.0
+
+Breaking changes:
+* `GKeyValue` has been renamed to `KeyValuePair`, thanks to Xia Li-yao
+* Removed unused `FromJSON` constraint in `withEmbeddedJson`, thanks to Tristan Seligmann
+
+Other improvements:
+* Optimizations of TH toEncoding, thanks to Xia Li-yao
+* Optimizations of hex decoding when using the default/pure unescape implementation, thanks to Xia Li-yao
+* Improved error message on `Day` parse failures, thanks to Gershom Bazerman
+* Add `encodeFile` as well as `decodeFile*` variants, thanks to Markus Hauck
+* Documentation	fixes, thanks to Lennart Spitzner
+* CPP cleanup, thanks to Ryan Scott
+
+### 1.2.4.0
+
+* Add `Ord` instance for `JSONPathElement`, thanks to Simon Hengel.
+
+
+### 1.2.3.0
+
+* Added `withEmbeddedJSON` to help parse JSON embedded inside a JSON string, thanks to Jesse Kempf.
+* Memory usage improvements to the default (pure) parser, thanks to Jonathan Paugh. Also thanks to Neil Mitchell & Oleg Grenrus for contributing a benchmark.
+* `omitNothingFields` now works for the `Option` newtype, thanks to Xia Li-yao.
+* Some documentation fixes, thanks to Jonathan Paug & Philippe Crama.
+
+### 1.2.2.0
+
+* Add `FromJSON` and `ToJSON` instances for
+  * `DiffTime`, thanks to Víctor López Juan.
+  * `CTime`, thanks to Daniel Díaz.
+* Fix handling of fractions when parsing Natural, thanks to Yuriy Syrovetskiy.
+* Change text in error messages for Integral types to make them follow the common pattern, thanks to Yuriy Syrovetskiy.
+* Add missing `INCOHERENT` pragma for `RecordToPair`, thanks to Xia Li-yao.
+* Everything related to `Options` is now exported from `Data.Aeson`, thanks to Xia Li-yao.
+* Optimizations to not escape text in clear cases, thanks to Oleg Grenrus.
+* Some documentation fixes, thanks to Phil de Joux & Xia Li-yao.
+
+### 1.2.1.0
+
+* Add `parserThrowError` and `parserCatchError` combinators, thanks to Oleg Grenrus.
+
+* Add `Generic` instance for `Value`, thanks to Xia Li-yao.
+
+* Fix a mistake in the 1.2.0.0 changelog, the `cffi` flag is disabled by default! Thanks to dbaynard.
+
 ## 1.2.0.0
 
 * `tagSingleConstructors`, an option to encode single-constructor types as tagged sums was added to `Options`. It is disabled by default for backward compatibility.
 
-* The `cffi` flag is now turned on by default, this means C FFI code is no longer used by default. You can flip the flag to get C implementation.
+* The `cffi` flag is now turned off (`False`) by default, this means C FFI code is no longer used by default. You can flip the flag to get C implementation.
 
 * The `Options` constructor is no longer exposed to prevent new options from being breaking changes, use `defaultOptions` instead.
 

@@ -1,55 +1,73 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- For Data.Aeson.Types.camelTo
 {-# OPTIONS_GHC -fno-warn-deprecations #-}
+
+#if MIN_VERSION_base(4,9,0)
+{-# OPTIONS_GHC -fno-warn-unused-top-binds #-}
+#endif
 
 module UnitTests
     (
       ioTests
     , tests
+    , withEmbeddedJSONTest
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Control.Monad (forM, forM_)
-import Data.Aeson ((.=), (.:), (.:?), (.:!), FromJSON(..), FromJSONKeyFunction(..), FromJSONKey(..), ToJSON1(..), decode, eitherDecode, encode, fromJSON, genericParseJSON, genericToEncoding, genericToJSON, object, withObject)
+import Data.Aeson ((.=), (.:), (.:?), (.:!), FromJSON(..), FromJSONKeyFunction(..), FromJSONKey(..), ToJSON1(..), decode, eitherDecode, encode, fromJSON, genericParseJSON, genericToEncoding, genericToJSON, object, withObject, withEmbeddedJSON)
 import Data.Aeson.Internal (JSONPathElement(..), formatError)
+import Data.Aeson.QQ.Simple (aesonQQ)
 import Data.Aeson.TH (deriveJSON, deriveToJSON, deriveToJSON1)
 import Data.Aeson.Text (encodeToTextBuilder)
-import Data.Aeson.Types (Options(..), Result(Success), ToJSON(..), Value(Null), camelTo, camelTo2, defaultOptions, omitNothingFields, parse)
+import Data.Aeson.Parser
+  ( json, jsonLast, jsonAccum, jsonNoDup
+  , json', jsonLast', jsonAccum', jsonNoDup')
+import Data.Aeson.Types
+  ( Options(..), Result(Success, Error), ToJSON(..)
+  , Value(Array, Bool, Null, Number, Object, String), camelTo, camelTo2
+  , defaultOptions, formatPath, formatRelativePath, omitNothingFields, parse)
+import Data.Attoparsec.ByteString (Parser, parseOnly)
 import Data.Char (toUpper)
 import Data.Either.Compat (isLeft, isRight)
 import Data.Hashable (hash)
-import Data.List (sort)
+import Data.HashMap.Strict (HashMap)
+import Data.List (sort, isSuffixOf)
 import Data.Maybe (fromMaybe)
-import Data.Sequence (Seq)
+import Data.Scientific (Scientific, scientific)
 import Data.Tagged (Tagged(..))
 import Data.Text (Text)
 import Data.Time (UTCTime)
-import Data.Time.Format (parseTime)
-import Data.Time.Locale.Compat (defaultTimeLocale)
+import Data.Time.Format.Compat (parseTimeM, defaultTimeLocale)
 import GHC.Generics (Generic)
 import Instances ()
+import Numeric.Natural (Natural)
 import System.Directory (getDirectoryContents)
 import System.FilePath ((</>), takeExtension, takeFileName)
-import Test.Framework (Test, testGroup)
-import Test.Framework.Providers.HUnit (testCase)
-import Test.HUnit (Assertion, assertBool, assertFailure, assertEqual)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, assertEqual, testCase, (@?=))
 import Text.Printf (printf)
 import UnitTests.NullaryConstructors (nullaryConstructors)
+import qualified Data.ByteString as S
 import qualified Data.ByteString.Base16.Lazy as LBase16
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.HashSet as HashSet
+import qualified Data.HashMap.Lazy as HashMap
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Builder as TLB
 import qualified Data.Text.Lazy.Encoding as LT
 import qualified Data.Text.Lazy.Encoding as TLE
+import qualified Data.Vector as Vector
 import qualified ErrorMessages
 import qualified SerializationFormatSpec
 
@@ -57,7 +75,7 @@ import qualified SerializationFormatSpec
 import Data.Aeson.Parser.UnescapeFFI ()
 import Data.Aeson.Parser.UnescapePure ()
 
-tests :: Test
+tests :: TestTree
 tests = testGroup "unit" [
     testGroup "SerializationFormatSpec" SerializationFormatSpec.tests
   , testGroup "ErrorMessages" ErrorMessages.tests
@@ -84,8 +102,8 @@ tests = testGroup "unit" [
       testCase "example 1" formatErrorExample
     ]
   , testGroup ".:, .:?, .:!" $ fmap (testCase "-") dotColonMark
-  , testGroup "JSONPath" $ fmap (testCase "-") jsonPath
   , testGroup "Hashable laws" $ fmap (testCase "-") hashableLaws
+  , testGroup "Object construction" $ fmap (testCase "-") objectConstruction
   , testGroup "Issue #351" $ fmap (testCase "-") issue351
   , testGroup "Nullary constructors" $ fmap (testCase "-") nullaryConstructors
   , testGroup "FromJSONKey" $ fmap (testCase "-") fromJSONKeyAssertions
@@ -93,6 +111,22 @@ tests = testGroup "unit" [
   , testCase "Unescape string (PR #477)" unescapeString
   , testCase "Show Options" showOptions
   , testGroup "SingleMaybeField" singleMaybeField
+  , testCase "withEmbeddedJSON" withEmbeddedJSONTest
+  , testCase "SingleFieldCon" singleFieldCon
+  , testGroup "UnknownFields" unknownFields
+  , testGroup "Ordering of object keys" keyOrdering
+  , testCase "Ratio with denominator 0" ratioDenominator0
+  , testCase "Rational parses number"   rationalNumber
+  , testCase "Big rational"             bigRationalDecoding
+  , testCase "Small rational"           smallRationalDecoding
+  , testCase "Big scientific exponent" bigScientificExponent
+  , testCase "Big integer decoding" bigIntegerDecoding
+  , testCase "Big natural decading" bigNaturalDecoding
+  , testCase "Big integer key decoding" bigIntegerKeyDecoding
+  , testGroup "QQ.Simple"
+    [ testCase "example" $
+      assertEqual "" (object ["foo" .= True]) [aesonQQ| {"foo": true } |]
+    ]
   ]
 
 roundTripCamel :: String -> Assertion
@@ -185,10 +219,18 @@ utcTimeGood = do
   assertEqual "utctime" (parseWithRead "%F %H:%MZ" ts11) t11
   assertEqual "utctime" (parseWithRead "%FT%T%QZ" "2015-01-01T14:30:00Z") t12
 
+  -- leap seconds are included correctly
+  let ts13 = "2015-08-23T23:59:60.128+00" :: LT.Text
+  let (Just (t13 ::  UTCTime)) = parseWithAeson ts13
+  assertEqual "utctime" (parseWithRead "%FT%T%QZ" "2015-08-23T23:59:60.128Z") t13
+  let ts14 = "2015-08-23T23:59:60.999999999999+00" :: LT.Text
+  let (Just (t14 ::  UTCTime)) = parseWithAeson ts14
+  assertEqual "utctime" (parseWithRead "%FT%T%QZ" "2015-08-23T23:59:60.999999999999Z") t14
+
   where
     parseWithRead :: String -> LT.Text -> UTCTime
     parseWithRead f s =
-      fromMaybe (error "parseTime input malformed") . parseTime defaultTimeLocale f . LT.unpack $ s
+      fromMaybe (error "parseTime input malformed") . parseTimeM True defaultTimeLocale f . LT.unpack $ s
     parseWithAeson :: LT.Text -> Maybe UTCTime
     parseWithAeson s = decode . LT.encodeUtf8 $ LT.concat ["\"", s, "\""]
 
@@ -204,6 +246,7 @@ utcTimeBad = do
   verifyFailParse "2015-01-01T12:30:00.00+00:00Z" -- no Zulu if offset given
   verifyFailParse "2015-01-03 12:13:00.Z" -- decimal at the end but no digits
   verifyFailParse "2015-01-03 12:13.000Z" -- decimal at the end, but no seconds
+  verifyFailParse "2015-01-03 23:59:61Z"  -- exceeds allowed seconds per day
   where
     verifyFailParse (s :: LT.Text) =
       let (dec :: Maybe UTCTime) = decode . LT.encodeUtf8 $ LT.concat ["\"", s, "\""] in
@@ -215,6 +258,18 @@ formatErrorExample =
   let rhs = formatError [Index 0, Key "foo", Key "bar", Key "a.b.c", Key "", Key "'\\", Key "end"] "error msg"
       lhs = "Error in $[0].foo.bar['a.b.c']['']['\\'\\\\'].end: error msg"
   in assertEqual "formatError example" lhs rhs
+
+formatPathExample :: Assertion
+formatPathExample =
+  let rhs = formatPath [Key "x", Index 0]
+      lhs = "$.x[0]"
+  in assertEqual "formatPath example" lhs rhs
+
+formatRelativePathExample :: Assertion
+formatRelativePathExample =
+  let rhs = formatRelativePath [Key "x", Index 0]
+      lhs = ".x[0]"
+  in assertEqual "formatRelativePath example" lhs rhs
 
 ------------------------------------------------------------------------------
 -- Comparison (.:?) and (.:!)
@@ -247,27 +302,6 @@ dotColonMark = [
         ex3 = "{\"value\": null }"
 
 ------------------------------------------------------------------------------
--- These tests check that JSONPath is tracked correctly
------------------------------------------------------------------------------
-
-jsonPath :: [Assertion]
-jsonPath = [
-    -- issue #356
-    assertEqual "Either"
-      (Left "Error in $[1].Left[1]: expected Bool, encountered Number")
-      (eitherDecode "[1,{\"Left\":[2,3]}]"
-         :: Either String (Int, Either (Int, Bool) ()))
-    -- issue #358
-  , assertEqual "Seq a"
-      (Left "Error in $[2]: expected Int, encountered Boolean")
-      (eitherDecode "[0,1,true]" :: Either String (Seq Int))
-  , assertEqual "Wibble"
-      (Left "Error in $.wibbleInt: expected Int, encountered Boolean")
-      (eitherDecode "{\"wibbleString\":\"\",\"wibbleInt\":true}"
-         :: Either String Wibble)
-  ]
-
-------------------------------------------------------------------------------
 -- Check that the hashes of two equal Value are the same
 ------------------------------------------------------------------------------
 
@@ -278,6 +312,18 @@ hashableLaws = [
   where
   a = object ["223" .= False, "807882556" .= True]
   b = object ["807882556" .= True, "223" .= False]
+
+------------------------------------------------------------------------------
+-- Check that an alternative way to construct objects works
+------------------------------------------------------------------------------
+
+objectConstruction :: [Assertion]
+objectConstruction = [
+    assertEqual "Equal objects constructed differently" recommended notRecommended
+  ]
+  where
+    recommended = object ["foo" .= True, "bar" .= (-1 :: Int)]
+    notRecommended = Object (mconcat ["foo" .= True, "bar" .= (-1 :: Int)])
 
 -------------------------------------------------------------------------------
 -- ToJSONKey
@@ -303,12 +349,14 @@ fromJSONKeyAssertions =
 #endif
     ]
   where
-    assertIsCoerce _ (FromJSONKeyCoerce _) = pure ()
-    assertIsCoerce n _                     = assertFailure n
+    assertIsCoerce :: String -> FromJSONKeyFunction a -> Assertion
+    assertIsCoerce _ FromJSONKeyCoerce = pure ()
+    assertIsCoerce n _                 = assertFailure n
 
 #if __GLASGOW_HASKELL__ >= 710
-    assertIsCoerce' _ (FromJSONKeyCoerce _) = pure ()
-    assertIsCoerce' n _                     = pickWithRules (assertFailure n) (pure ())
+    assertIsCoerce' :: String -> FromJSONKeyFunction a -> Assertion
+    assertIsCoerce' _ FromJSONKeyCoerce = pure ()
+    assertIsCoerce' n _                 = pickWithRules (assertFailure n) (pure ())
 
 -- | Pick the first when RULES are enabled, e.g. optimisations are on
 pickWithRules
@@ -339,13 +387,13 @@ issue351 = [
 -- Comparison between bytestring and text encoders
 ------------------------------------------------------------------------------
 
-ioTests :: IO [Test]
+ioTests :: IO [TestTree]
 ioTests = do
   enc <- encoderComparisonTests
   js <- jsonTestSuite
   return [enc, js]
 
-encoderComparisonTests :: IO Test
+encoderComparisonTests :: IO TestTree
 encoderComparisonTests = do
   encoderTests <- forM testFiles $ \file0 -> do
       let file = "benchmarks/json-data/" ++ file0
@@ -405,7 +453,7 @@ unescapeString = do
 
 -- JSONTestSuite
 
-jsonTestSuiteTest :: FilePath -> Test
+jsonTestSuiteTest :: FilePath -> TestTree
 jsonTestSuiteTest path = testCase fileName $ do
     payload <- L.readFile path
     let result = eitherDecode payload :: Either String Value
@@ -420,7 +468,7 @@ jsonTestSuiteTest path = testCase fileName $ do
 -- Build a collection of tests based on the current contents of the
 -- JSONTestSuite test directories.
 
-jsonTestSuite :: IO Test
+jsonTestSuite :: IO TestTree
 jsonTestSuite = do
   let suitePath = "tests/JSONTestSuite"
   let suites = ["test_parsing", "test_transform"]
@@ -459,9 +507,6 @@ _blacklist = HashSet.fromList [
   , "i_string_not_in_unicode_range.json"
   , "i_string_truncated-utf-8.json"
   , "i_structure_UTF-8_BOM_empty_object.json"
-  , "n_string_unescaped_crtl_char.json"
-  , "n_string_unescaped_newline.json"
-  , "n_string_unescaped_tab.json"
   , "string_1_escaped_invalid_codepoint.json"
   , "string_1_invalid_codepoint.json"
   , "string_1_invalid_codepoints.json"
@@ -495,13 +540,14 @@ showOptions =
         ++ ", sumEncoding = TaggedObject {tagFieldName = \"tag\", contentsFieldName = \"contents\"}"
         ++ ", unwrapUnaryRecords = False"
         ++ ", tagSingleConstructors = False"
+        ++ ", rejectUnknownFields = False"
         ++ "}")
         (show defaultOptions)
 
 newtype SingleMaybeField = SingleMaybeField { smf :: Maybe Int }
   deriving (Eq, Show, Generic)
 
-singleMaybeField :: [Test]
+singleMaybeField :: [TestTree]
 singleMaybeField = do
   (gName, gToJSON, gToEncoding, gFromJSON) <-
     [ ("generic", genericToJSON opts, genericToEncoding opts, parse (genericParseJSON opts))
@@ -515,9 +561,207 @@ singleMaybeField = do
     v = SingleMaybeField Nothing
     opts = defaultOptions{omitNothingFields=True,unwrapUnaryRecords=True}
 
+
+newtype EmbeddedJSONTest = EmbeddedJSONTest Int
+  deriving (Eq, Show)
+
+instance FromJSON EmbeddedJSONTest where
+  parseJSON =
+    withObject "Object" $ \o ->
+      EmbeddedJSONTest <$> (o .: "prop" >>= withEmbeddedJSON "Quoted Int" parseJSON)
+
+withEmbeddedJSONTest :: Assertion
+withEmbeddedJSONTest =
+  assertEqual "Unquote embedded JSON" (Right $ EmbeddedJSONTest 1) (eitherDecode "{\"prop\":\"1\"}")
+
+-- Regression test for https://github.com/bos/aeson/issues/627
+newtype SingleFieldCon = SingleFieldCon Int deriving (Eq, Show, Generic)
+
+instance FromJSON SingleFieldCon where
+  parseJSON = genericParseJSON defaultOptions{unwrapUnaryRecords=True}
+  -- This option should have no effect on this type
+
+singleFieldCon :: Assertion
+singleFieldCon =
+  assertEqual "fromJSON" (Right (SingleFieldCon 0)) (eitherDecode "0")
+
+newtype UnknownFields = UnknownFields { knownField :: Int }
+  deriving (Eq, Show, Generic)
+newtype UnknownFieldsTag = UnknownFieldsTag { tag :: Int }
+  deriving (Eq, Show, Generic)
+newtype UnknownFieldsUnaryTagged = UnknownFieldsUnaryTagged { knownFieldUnaryTagged :: Int }
+  deriving (Eq, Show, Generic)
+data UnknownFieldsSum
+  = UnknownFields1 { knownField1 :: Int }
+  | UnknownFields2 { knownField2 :: Int }
+  deriving (Eq, Show, Generic)
+
+unknownFields :: [TestTree]
+unknownFields = concat
+    [ testsUnary
+        "unary-unknown"
+        (object [("knownField", Number 1), ("unknownField", Number 1)])
+        (Error "nknown fields: [\"unknownField\"]" :: Result UnknownFields)
+    , testsUnary
+        "unary-unknown-tag"
+        (object [("knownField", Number 1), ("tag", String "UnknownFields")])
+        (Error "nknown fields: [\"tag\"]" :: Result UnknownFields)
+    , testsUnaryTag
+        "unary-explicit-tag"
+        (object [("tag", Number 1)])
+        (Success $ UnknownFieldsTag 1)
+    , testsSum
+        "sum-tag"
+        (object [("knownField1", Number 1), ("tag", String "UnknownFields1")])
+        (Success $ UnknownFields1 1)
+    , testsSum
+        "sum-unknown-in-branch"
+        (object [("knownField1", Number 1), ("knownField2", Number 1), ("tag", String "UnknownFields1")])
+        (Error "nknown fields: [\"knownField2\"]" :: Result UnknownFieldsSum)
+    , testsSum
+        "sum-unknown"
+        (object [("knownField1", Number 1), ("unknownField", Number 1), ("tag", String "UnknownFields1")])
+        (Error "nknown fields: [\"unknownField\"]" :: Result UnknownFieldsSum)
+    , testsTagged
+        "unary-tagged"
+        (object [("knownFieldUnaryTagged", Number 1), ("tag", String "UnknownFieldsUnaryTagged")])
+        (Success $ UnknownFieldsUnaryTagged 1)
+    , -- Just a case to verify that the tag isn't optional, this is likely already tested by other unit tests
+      testsTagged
+        "unary-tagged-notag"
+        (object [("knownFieldUnaryTagged", Number 1)])
+        (Error "key \"tag\" not found" :: Result UnknownFieldsUnaryTagged)
+    , testsTagged
+        "unary-tagged-unknown"
+        (object [ ("knownFieldUnaryTagged", Number 1), ("unknownField", Number 1)
+                , ("tag", String "UnknownFieldsUnaryTagged")])
+        (Error "nknown fields: [\"unknownField\"]" :: Result UnknownFieldsUnaryTagged)
+    ]
+    where
+        opts = defaultOptions{rejectUnknownFields=True}
+        taggedOpts = opts{tagSingleConstructors=True}
+        assertApprox :: (Show a, Eq a) => Result a -> Result a -> IO ()
+        assertApprox (Error expected) (Error actual) | expected `isSuffixOf` actual = return ()
+        assertApprox expected actual = assertEqual "fromJSON" expected actual
+        testsBase :: (Show a, Eq a) => (Value -> Result a) -> (Value -> Result a)
+                                    -> String -> Value -> Result a -> [TestTree]
+        testsBase th g name value expected =
+            [ testCase (name ++ "-th") $ assertApprox expected (th value)
+            , testCase (name ++ "-generic") $ assertApprox expected (g value)
+            ]
+        testsUnary :: String -> Value -> Result UnknownFields -> [TestTree]
+        testsUnary = testsBase fromJSON (parse (genericParseJSON opts))
+        testsUnaryTag :: String -> Value -> Result UnknownFieldsTag -> [TestTree]
+        testsUnaryTag = testsBase fromJSON (parse (genericParseJSON opts))
+        testsSum :: String -> Value -> Result UnknownFieldsSum -> [TestTree]
+        testsSum = testsBase fromJSON (parse (genericParseJSON opts))
+        testsTagged :: String -> Value -> Result UnknownFieldsUnaryTagged -> [TestTree]
+        testsTagged = testsBase fromJSON (parse (genericParseJSON taggedOpts))
+
+testParser :: (Eq a, Show a)
+           => String -> Parser a -> S.ByteString -> Either String a -> TestTree
+testParser name json_ s expected =
+  testCase name (parseOnly json_ s @?= expected)
+
+keyOrdering :: [TestTree]
+keyOrdering =
+  [ testParser "json" json
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Bool True)]))
+  , testParser "jsonLast" jsonLast
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Bool False)]))
+  , testParser "jsonAccum" jsonAccum
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Array (Vector.fromList [Bool True, Bool False]))]))
+  , testParser "jsonNoDup" jsonNoDup
+      "{\"k\":true,\"k\":false}" $
+      Left "Failed reading: found duplicate key: \"k\""
+
+  , testParser "json'" json'
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Bool True)]))
+  , testParser "jsonLast'" jsonLast'
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Bool False)]))
+  , testParser "jsonAccum'" jsonAccum'
+      "{\"k\":true,\"k\":false}" $
+      Right (Object (HashMap.fromList [("k", Array (Vector.fromList [Bool True, Bool False]))]))
+  , testParser "jsonNoDup'" jsonNoDup'
+      "{\"k\":true,\"k\":false}" $
+      Left "Failed reading: found duplicate key: \"k\""
+  ]
+
+ratioDenominator0 :: Assertion
+ratioDenominator0 =
+  assertEqual "Ratio with denominator 0"
+    (Left "Error in $: Ratio denominator was 0")
+    (eitherDecode "{ \"numerator\": 1, \"denominator\": 0 }" :: Either String Rational)
+
+rationalNumber :: Assertion
+rationalNumber =
+  assertEqual "Ratio with denominator 0"
+    (Right 1.37)
+    (eitherDecode "1.37" :: Either String Rational)
+
+bigRationalDecoding :: Assertion
+bigRationalDecoding =
+  assertEqual "Decoding an Integer with a large exponent should fail"
+    (Left "Error in $: parsing Ratio failed, found a number with exponent 2000, but it must not be greater than 1024 or less than -1024")
+    ((eitherDecode :: L.ByteString -> Either String Rational) "1e2000")
+
+smallRationalDecoding :: Assertion
+smallRationalDecoding =
+  assertEqual "Decoding an Integer with a large exponent should fail"
+    (Left "Error in $: parsing Ratio failed, found a number with exponent -2000, but it must not be greater than 1024 or less than -1024")
+    ((eitherDecode :: L.ByteString -> Either String Rational) "1e-2000")
+
+
+bigScientificExponent :: Assertion
+bigScientificExponent =
+  assertEqual "Encoding an integral scientific with a large exponent should normalize it"
+    "1.0e2000"
+    (encode (scientific 1 2000 :: Scientific))
+
+bigIntegerDecoding :: Assertion
+bigIntegerDecoding =
+  assertEqual "Decoding an Integer with a large exponent should fail"
+    (Left "Error in $: parsing Integer failed, found a number with exponent 2000, but it must not be greater than 1024")
+    ((eitherDecode :: L.ByteString -> Either String Integer) "1e2000")
+
+bigNaturalDecoding :: Assertion
+bigNaturalDecoding =
+  assertEqual "Decoding a Natural with a large exponent should fail"
+    (Left "Error in $: parsing Natural failed, found a number with exponent 2000, but it must not be greater than 1024")
+    ((eitherDecode :: L.ByteString -> Either String Natural) "1e2000")
+
+bigIntegerKeyDecoding :: Assertion
+bigIntegerKeyDecoding =
+  assertEqual "Decoding an Integer key with a large exponent should fail"
+    (Left "Error in $['1e2000']: parsing Integer failed, found a number with exponent 2000, but it must not be greater than 1024")
+    ((eitherDecode :: L.ByteString -> Either String (HashMap Integer Value)) "{ \"1e2000\": null }")
+
+bigNaturalKeyDecoding :: Assertion
+bigNaturalKeyDecoding =
+  assertEqual "Decoding an Integer key with a large exponent should fail"
+    (Left "Error in $['1e2000']: found a number with exponent 2000, but it must not be greater than 1024")
+    ((eitherDecode :: L.ByteString -> Either String (HashMap Natural Value)) "{ \"1e2000\": null }")
+
+-- A regression test for: https://github.com/bos/aeson/issues/757
+type family Fam757 :: * -> *
+type instance Fam757 = Maybe
+newtype Newtype757 a = MkNewtype757 (Fam757 a)
+
 deriveJSON defaultOptions{omitNothingFields=True} ''MyRecord
 
 deriveToJSON  defaultOptions ''Foo
 deriveToJSON1 defaultOptions ''Foo
 
 deriveJSON defaultOptions{omitNothingFields=True,unwrapUnaryRecords=True} ''SingleMaybeField
+
+deriveJSON defaultOptions{rejectUnknownFields=True} ''UnknownFields
+deriveJSON defaultOptions{rejectUnknownFields=True} ''UnknownFieldsTag
+deriveJSON defaultOptions{tagSingleConstructors=True,rejectUnknownFields=True} ''UnknownFieldsUnaryTagged
+deriveJSON defaultOptions{rejectUnknownFields=True} ''UnknownFieldsSum
+
+deriveToJSON1 defaultOptions ''Newtype757

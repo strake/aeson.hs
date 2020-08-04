@@ -2,7 +2,9 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE StandaloneDeriving #-}
 #if __GLASGOW_HASKELL__ >= 800
 -- a) THQ works on cross-compilers and unregisterised GHCs
 -- b) may make compilation faster as no dynamic loading is ever needed (not sure about this)
@@ -43,8 +45,14 @@ module Data.Aeson.Types.Internal
     , parse
     , parseEither
     , parseMaybe
+    , parseFail
     , modifyFailure
+    , prependFailure
+    , parserThrowError
+    , parserCatchError
     , formatError
+    , formatPath
+    , formatRelativePath
     , (<?>)
     -- * Constructors and accessors
     , object
@@ -58,11 +66,14 @@ module Data.Aeson.Types.Internal
         , sumEncoding
         , unwrapUnaryRecords
         , tagSingleConstructors
+        , rejectUnknownFields
         )
 
     , SumEncoding(..)
+    , JSONKeyOptions(keyModifier)
     , defaultOptions
     , defaultTaggedObject
+    , defaultJSONKeyOptions
 
     -- * Used for changing CamelCase names into something else.
     , camelTo
@@ -72,7 +83,6 @@ module Data.Aeson.Types.Internal
     , DotNetTime(..)
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Control.Applicative (Alternative(..))
@@ -86,7 +96,6 @@ import Data.HashMap.Strict (HashMap)
 import Data.Hashable (Hashable(..))
 import Data.List (intercalate)
 import Data.Scientific (Scientific)
-import Data.Semigroup (Semigroup((<>)))
 import Data.String (IsString(..))
 import Data.Text (Text, pack, unpack)
 import Data.Time (UTCTime)
@@ -94,15 +103,12 @@ import Data.Time.Format (FormatTime)
 import Data.Typeable (Typeable)
 import Data.Vector (Vector)
 import GHC.Generics (Generic)
+import qualified Control.Monad as Monad
 import qualified Control.Monad.Fail as Fail
 import qualified Data.HashMap.Strict as H
 import qualified Data.Scientific as S
 import qualified Data.Vector as V
 import qualified Language.Haskell.TH.Syntax as TH
-
-#if !MIN_VERSION_unordered_containers(0,2,6)
-import Data.List (sort)
-#endif
 
 -- | Elements of a JSON path used to describe the location of an
 -- error.
@@ -112,7 +118,7 @@ data JSONPathElement = Key Text
                      | Index {-# UNPACK #-} !Int
                        -- ^ JSON path element of an index into an
                        -- array, \"array[index]\".
-                       deriving (Eq, Show, Typeable)
+                       deriving (Eq, Show, Typeable, Ord)
 type JSONPath = [JSONPathElement]
 
 -- | The internal result of running a 'Parser'.
@@ -147,7 +153,7 @@ instance Functor Result where
     fmap _ (Error err) = Error err
     {-# INLINE fmap #-}
 
-instance Monad IResult where
+instance Monad.Monad IResult where
     return = pure
     {-# INLINE return #-}
 
@@ -155,14 +161,16 @@ instance Monad IResult where
     IError path err >>= _ = IError path err
     {-# INLINE (>>=) #-}
 
+#if !(MIN_VERSION_base(4,13,0))
     fail = Fail.fail
     {-# INLINE fail #-}
+#endif
 
 instance Fail.MonadFail IResult where
     fail err = IError [] err
     {-# INLINE fail #-}
 
-instance Monad Result where
+instance Monad.Monad Result where
     return = pure
     {-# INLINE return #-}
 
@@ -170,8 +178,10 @@ instance Monad Result where
     Error err >>= _ = Error err
     {-# INLINE (>>=) #-}
 
+#if !(MIN_VERSION_base(4,13,0))
     fail = Fail.fail
     {-# INLINE fail #-}
+#endif
 
 instance Fail.MonadFail Result where
     fail err = Error err
@@ -268,7 +278,9 @@ type Failure f r   = JSONPath -> String -> f r
 -- | Success continuation.
 type Success a f r = a -> f r
 
--- | A JSON parser.
+-- | A JSON parser.  N.B. This might not fit your usual understanding of
+--  "parser".  Instead you might like to think of 'Parser' as a "parse result",
+-- i.e. a parser to which the input has already been applied.
 newtype Parser a = Parser {
       runParser :: forall f r.
                    JSONPath
@@ -277,14 +289,17 @@ newtype Parser a = Parser {
                 -> f r
     }
 
-instance Monad Parser where
+instance Monad.Monad Parser where
     m >>= g = Parser $ \path kf ks -> let ks' a = runParser (g a) path kf ks
                                        in runParser m path kf ks'
     {-# INLINE (>>=) #-}
     return = pure
     {-# INLINE return #-}
+
+#if !(MIN_VERSION_base(4,13,0))
     fail = Fail.fail
     {-# INLINE fail #-}
+#endif
 
 instance Fail.MonadFail Parser where
     fail msg = Parser $ \path kf _ks -> kf (reverse path) msg
@@ -324,11 +339,14 @@ instance Monoid (Parser a) where
     mappend = (<>)
     {-# INLINE mappend #-}
 
+-- | Raise a parsing failure with some custom message.
+parseFail :: String -> Parser a
+parseFail = fail
+
 apP :: Parser (a -> b) -> Parser a -> Parser b
 apP d e = do
   b <- d
-  a <- e
-  return (b a)
+  b <$> e
 {-# INLINE apP #-}
 
 -- | A JSON \"object\" (key\/value map).
@@ -345,6 +363,17 @@ data Value = Object !Object
            | Bool !Bool
            | Null
              deriving (Eq, Read, Show, Typeable, Data, Generic)
+
+-- |
+--
+-- The ordering is total, consistent with 'Eq' innstance.
+-- However, nothing else about the ordering is specified,
+-- and it may change from environment to environment and version to version
+-- of either this package or its dependencies ('hashable' and 'unordered-containers').
+--
+-- @since 1.5.2.0
+deriving instance Ord Value
+-- standalone deriving to attach since annotation.
 
 -- | A newtype wrapper for 'UTCTime' that uses the same non-standard
 -- serialization format as Microsoft .NET, whose
@@ -372,14 +401,7 @@ instance IsString Value where
     {-# INLINE fromString #-}
 
 hashValue :: Int -> Value -> Int
-#if MIN_VERSION_unordered_containers(0,2,6)
 hashValue s (Object o)   = s `hashWithSalt` (0::Int) `hashWithSalt` o
-#else
-hashValue s (Object o)   = foldl' hashWithSalt
-                              (s `hashWithSalt` (0::Int)) assocHashesSorted
-  where
-    assocHashesSorted = sort [hash k `hashWithSalt` v | (k, v) <- H.toList o]
-#endif
 hashValue s (Array a)    = foldl' hashWithSalt
                               (s `hashWithSalt` (1::Int)) a
 hashValue s (String str) = s `hashWithSalt` (2::Int) `hashWithSalt` str
@@ -404,6 +426,9 @@ instance TH.Lift Value where
       where a' = V.toList a
     lift (Object o) = [| Object (H.fromList . map (first pack) $ o') |]
       where o' = map (first unpack) . H.toList $ o
+#if MIN_VERSION_template_haskell(2,16,0)
+    liftTyped = TH.unsafeTExpCoerce . TH.lift
+#endif
 
 -- | The empty array.
 emptyArray :: Value
@@ -444,7 +469,17 @@ parseEither m v = runParser (m v) [] onError Right
 -- | Annotate an error message with a
 -- <http://goessner.net/articles/JsonPath/ JSONPath> error location.
 formatError :: JSONPath -> String -> String
-formatError path msg = "Error in " ++ format "$" path ++ ": " ++ msg
+formatError path msg = "Error in " ++ formatPath path ++ ": " ++ msg
+
+-- | Format a <http://goessner.net/articles/JsonPath/ JSONPath> as a 'String',
+-- representing the root object as @$@.
+formatPath :: JSONPath -> String
+formatPath path = "$" ++ formatRelativePath path
+
+-- | Format a <http://goessner.net/articles/JsonPath/ JSONPath> as a 'String'
+-- which represents the path relative to some root object.
+formatRelativePath :: JSONPath -> String
+formatRelativePath path = format "" path
   where
     format :: String -> JSONPath -> String
     format pfx []                = pfx
@@ -507,13 +542,40 @@ p <?> pathElem = Parser $ \path kf ks -> runParser p (pathElem:path) kf ks
 --
 -- Since 0.6.2.0
 modifyFailure :: (String -> String) -> Parser a -> Parser a
-modifyFailure f (Parser p) = Parser $ \path kf ks -> p path (\p' m -> kf p' (f m)) ks
+modifyFailure f (Parser p) = Parser $ \path kf ks ->
+    p path (\p' m -> kf p' (f m)) ks
+
+-- | If the inner 'Parser' failed, prepend the given string to the failure
+-- message.
+--
+-- @
+-- 'prependFailure' s = 'modifyFailure' (s '++')
+-- @
+prependFailure :: String -> Parser a -> Parser a
+prependFailure = modifyFailure . (++)
+
+-- | Throw a parser error with an additional path.
+--
+-- @since 1.2.1.0
+parserThrowError :: JSONPath -> String -> Parser a
+parserThrowError path' msg = Parser $ \path kf _ks ->
+    kf (reverse path ++ path') msg
+
+-- | A handler function to handle previous errors and return to normal execution.
+--
+-- @since 1.2.1.0
+parserCatchError :: Parser a -> (JSONPath -> String -> Parser a) -> Parser a
+parserCatchError (Parser p) handler = Parser $ \path kf ks ->
+    p path (\e msg -> runParser (handler e msg) path kf ks) ks
 
 --------------------------------------------------------------------------------
 -- Generic and TH encoding configuration
 --------------------------------------------------------------------------------
 
 -- | Options that specify how to encode\/decode your datatype to\/from JSON.
+--
+-- Options can be set using record syntax on 'defaultOptions' with the fields
+-- below.
 data Options = Options
     { fieldLabelModifier :: String -> String
       -- ^ Function applied to field labels.
@@ -527,9 +589,54 @@ data Options = Options
       -- the constructor tag. If 'False' the encoding will always
       -- follow the `sumEncoding`.
     , omitNothingFields :: Bool
-      -- ^ If 'True' record fields with a 'Nothing' value will be
-      -- omitted from the resulting object. If 'False' the resulting
+      -- ^ If 'True', record fields with a 'Nothing' value will be
+      -- omitted from the resulting object. If 'False', the resulting
       -- object will include those fields mapping to @null@.
+      --
+      -- Note that this /does not/ affect parsing: 'Maybe' fields are
+      -- optional regardless of the value of 'omitNothingFields', subject
+      -- to the note below.
+      --
+      -- === Note
+      --
+      -- Setting 'omitNothingFields' to 'True' only affects fields which are of
+      -- type 'Maybe' /uniformly/ in the 'ToJSON' instance.
+      -- In particular, if the type of a field is declared as a type variable, it
+      -- will not be omitted from the JSON object, unless the field is
+      -- specialized upfront in the instance.
+      --
+      -- The same holds for 'Maybe' fields being optional in the 'FromJSON' instance.
+      --
+      -- ==== __Example__
+      --
+      -- The generic instance for the following type @Fruit@ depends on whether
+      -- the instance head is @Fruit a@ or @Fruit (Maybe a)@.
+      --
+      -- @
+      -- data Fruit a = Fruit
+      --   { apples :: a  -- A field whose type is a type variable.
+      --   , oranges :: 'Maybe' Int
+      --   } deriving 'Generic'
+      --
+      -- -- apples required, oranges optional
+      -- -- Even if 'Data.Aeson.fromJSON' is then specialized to (Fruit ('Maybe' a)).
+      -- instance 'Data.Aeson.FromJSON' a => 'Data.Aeson.FromJSON' (Fruit a)
+      --
+      -- -- apples optional, oranges optional
+      -- -- In this instance, the field apples is uniformly of type ('Maybe' a).
+      -- instance 'Data.Aeson.FromJSON' a => 'Data.Aeson.FromJSON' (Fruit ('Maybe' a))
+      --
+      -- options :: 'Options'
+      -- options = 'defaultOptions' { 'omitNothingFields' = 'True' }
+      --
+      -- -- apples always present in the output, oranges is omitted if 'Nothing'
+      -- instance 'Data.Aeson.ToJSON' a => 'Data.Aeson.ToJSON' (Fruit a) where
+      --   'Data.Aeson.toJSON' = 'Data.Aeson.genericToJSON' options
+      --
+      -- -- both apples and oranges are omitted if 'Nothing'
+      -- instance 'Data.Aeson.ToJSON' a => 'Data.Aeson.ToJSON' (Fruit ('Maybe' a)) where
+      --   'Data.Aeson.toJSON' = 'Data.Aeson.genericToJSON' options
+      -- @
     , sumEncoding :: SumEncoding
       -- ^ Specifies how to encode constructors of a sum datatype.
     , unwrapUnaryRecords :: Bool
@@ -538,10 +645,14 @@ data Options = Options
     , tagSingleConstructors :: Bool
       -- ^ Encode types with a single constructor as sums,
       -- so that `allNullaryToStringTag` and `sumEncoding` apply.
+    , rejectUnknownFields :: Bool
+      -- ^ Applies only to 'Data.Aeson.FromJSON' instances. If a field appears in
+      -- the parsed object map, but does not appear in the target object, parsing
+      -- will fail, with an error message indicating which fields were unknown.
     }
 
 instance Show Options where
-  show (Options f c a o s u t) =
+  show (Options f c a o s u t r) =
        "Options {"
     ++ intercalate ", "
       [ "fieldLabelModifier =~ " ++ show (f "exampleField")
@@ -551,6 +662,7 @@ instance Show Options where
       , "sumEncoding = " ++ show s
       , "unwrapUnaryRecords = " ++ show u
       , "tagSingleConstructors = " ++ show t
+      , "rejectUnknownFields = " ++ show r
       ]
     ++ "}"
 
@@ -594,6 +706,33 @@ data SumEncoding =
     -- contents of the constructor.
     deriving (Eq, Show)
 
+-- | Options for encoding keys with 'Data.Aeson.Types.genericFromJSONKey' and
+-- 'Data.Aeson.Types.genericToJSONKey'.
+data JSONKeyOptions = JSONKeyOptions
+    { keyModifier :: String -> String
+      -- ^ Function applied to keys. Its result is what goes into the encoded
+      -- 'Value'.
+      --
+      -- === __Example__
+      --
+      -- The following instances encode the constructor @Bar@ to lower-case keys
+      -- @\"bar\"@.
+      --
+      -- @
+      -- data Foo = Bar
+      --   deriving 'Generic'
+      --
+      -- opts :: 'JSONKeyOptions'
+      -- opts = 'defaultJSONKeyOptions' { 'keyModifier' = 'toLower' }
+      --
+      -- instance 'ToJSONKey' Foo where
+      --   'toJSONKey' = 'genericToJSONKey' opts
+      --
+      -- instance 'FromJSONKey' Foo where
+      --   'fromJSONKey' = 'genericFromJSONKey' opts
+      -- @
+    }
+
 -- | Default encoding 'Options':
 --
 -- @
@@ -605,6 +744,7 @@ data SumEncoding =
 -- , 'sumEncoding'             = 'defaultTaggedObject'
 -- , 'unwrapUnaryRecords'      = False
 -- , 'tagSingleConstructors'   = False
+-- , 'rejectUnknownFields'     = False
 -- }
 -- @
 defaultOptions :: Options
@@ -616,6 +756,7 @@ defaultOptions = Options
                  , sumEncoding             = defaultTaggedObject
                  , unwrapUnaryRecords      = False
                  , tagSingleConstructors   = False
+                 , rejectUnknownFields     = False
                  }
 
 -- | Default 'TaggedObject' 'SumEncoding' options:
@@ -631,6 +772,16 @@ defaultTaggedObject = TaggedObject
                       { tagFieldName      = "tag"
                       , contentsFieldName = "contents"
                       }
+
+-- | Default 'JSONKeyOptions':
+--
+-- @
+-- defaultJSONKeyOptions = 'JSONKeyOptions'
+--                         { 'keyModifier' = 'id'
+--                         }
+-- @
+defaultJSONKeyOptions :: JSONKeyOptions
+defaultJSONKeyOptions = JSONKeyOptions id
 
 -- | Converts from CamelCase to another lower case, interspersing
 --   the character between all capital letters and their previous

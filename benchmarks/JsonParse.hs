@@ -1,10 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Main (main) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Control.DeepSeq
@@ -16,7 +17,7 @@ import Text.JSON
 instance NFData JSValue where
     rnf JSNull = ()
     rnf (JSBool b) = rnf b
-    rnf (JSRational b r) = rnf b `seq` rnf r `seq` ()
+    rnf (JSRational b r) = rnf b `seq` rnf r
     rnf (JSString s) = rnf (fromJSString s)
     rnf (JSArray vs) = rnf vs
     rnf (JSObject kvs) = rnf (fromJSObject kvs)

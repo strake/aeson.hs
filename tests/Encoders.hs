@@ -1,11 +1,12 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Encoders (module Encoders) where
 
-import Prelude ()
 import Prelude.Compat
+import Data.Text (Text)
 
 import Data.Aeson.TH
 import Data.Aeson.Types
@@ -96,6 +97,18 @@ gNullaryToEncodingObjectWithSingleField = genericToEncoding optsObjectWithSingle
 gNullaryParseJSONObjectWithSingleField :: Value -> Parser Nullary
 gNullaryParseJSONObjectWithSingleField = genericParseJSON optsObjectWithSingleField
 
+keyOptions :: JSONKeyOptions
+keyOptions = defaultJSONKeyOptions { keyModifier = ('k' :) }
+
+gNullaryToJSONKey :: Nullary -> Either String Text
+gNullaryToJSONKey x = case genericToJSONKey keyOptions of
+  ToJSONKeyText p _ -> Right (p x)
+  _ -> Left "Should be a ToJSONKeyText"
+
+gNullaryFromJSONKey :: Text -> Parser Nullary
+gNullaryFromJSONKey t = case genericFromJSONKey keyOptions of
+  FromJSONKeyTextParser p -> p t
+  _ -> fail "Not a TextParser"
 
 --------------------------------------------------------------------------------
 -- SomeType encoders/decoders
@@ -175,7 +188,6 @@ gSomeTypeToEncoding2ElemArray = genericToEncoding opts2ElemArray
 gSomeTypeParseJSON2ElemArray :: Value -> Parser (SomeType Int)
 gSomeTypeParseJSON2ElemArray = genericParseJSON opts2ElemArray
 
-#if __GLASGOW_HASKELL__ >= 706
 gSomeTypeLiftToEncoding2ElemArray :: LiftToEncoding SomeType a
 gSomeTypeLiftToEncoding2ElemArray = genericLiftToEncoding opts2ElemArray
 
@@ -184,7 +196,6 @@ gSomeTypeLiftToJSON2ElemArray = genericLiftToJSON opts2ElemArray
 
 gSomeTypeLiftParseJSON2ElemArray :: LiftParseJSON SomeType a
 gSomeTypeLiftParseJSON2ElemArray = genericLiftParseJSON opts2ElemArray
-#endif
 
 
 gSomeTypeToJSONTaggedObject :: SomeType Int -> Value
@@ -196,7 +207,6 @@ gSomeTypeToEncodingTaggedObject = genericToEncoding optsTaggedObject
 gSomeTypeParseJSONTaggedObject :: Value -> Parser (SomeType Int)
 gSomeTypeParseJSONTaggedObject = genericParseJSON optsTaggedObject
 
-#if __GLASGOW_HASKELL__ >= 706
 gSomeTypeLiftToEncodingTaggedObject :: LiftToEncoding SomeType a
 gSomeTypeLiftToEncodingTaggedObject = genericLiftToEncoding optsTaggedObject
 
@@ -205,7 +215,6 @@ gSomeTypeLiftToJSONTaggedObject = genericLiftToJSON optsTaggedObject
 
 gSomeTypeLiftParseJSONTaggedObject :: LiftParseJSON SomeType a
 gSomeTypeLiftParseJSONTaggedObject = genericLiftParseJSON optsTaggedObject
-#endif
 
 
 gSomeTypeToJSONObjectWithSingleField :: SomeType Int -> Value
@@ -217,7 +226,6 @@ gSomeTypeToEncodingObjectWithSingleField = genericToEncoding optsObjectWithSingl
 gSomeTypeParseJSONObjectWithSingleField :: Value -> Parser (SomeType Int)
 gSomeTypeParseJSONObjectWithSingleField = genericParseJSON optsObjectWithSingleField
 
-#if __GLASGOW_HASKELL__ >= 706
 gSomeTypeLiftToEncodingObjectWithSingleField :: LiftToEncoding SomeType a
 gSomeTypeLiftToEncodingObjectWithSingleField = genericLiftToEncoding optsObjectWithSingleField
 
@@ -226,7 +234,6 @@ gSomeTypeLiftToJSONObjectWithSingleField = genericLiftToJSON optsObjectWithSingl
 
 gSomeTypeLiftParseJSONObjectWithSingleField :: LiftParseJSON SomeType a
 gSomeTypeLiftParseJSONObjectWithSingleField = genericLiftParseJSON optsObjectWithSingleField
-#endif
 
 
 gSomeTypeToJSONOmitNothingFields :: SomeType Int -> Value
@@ -234,6 +241,58 @@ gSomeTypeToJSONOmitNothingFields = genericToJSON optsOmitNothingFields
 
 gSomeTypeToEncodingOmitNothingFields :: SomeType Int -> Encoding
 gSomeTypeToEncodingOmitNothingFields = genericToEncoding optsOmitNothingFields
+
+
+thSomeTypeParseJSONRejectUnknownFields :: Value -> Parser (SomeType Int)
+thSomeTypeParseJSONRejectUnknownFields = $(mkParseJSON optsRejectUnknownFields ''SomeType)
+
+gSomeTypeParseJSONRejectUnknownFields :: Value -> Parser (SomeType Int)
+gSomeTypeParseJSONRejectUnknownFields = genericParseJSON optsRejectUnknownFields
+
+
+--------------------------------------------------------------------------------
+-- Foo decoders
+--------------------------------------------------------------------------------
+
+thFooParseJSONRejectUnknownFields :: Value -> Parser Foo
+thFooParseJSONRejectUnknownFields = $(mkParseJSON optsRejectUnknownFields ''Foo)
+
+gFooParseJSONRejectUnknownFields :: Value -> Parser Foo
+gFooParseJSONRejectUnknownFields = genericParseJSON optsRejectUnknownFields
+
+
+thFooParseJSONRejectUnknownFieldsTagged :: Value -> Parser Foo
+thFooParseJSONRejectUnknownFieldsTagged = $(mkParseJSON optsRejectUnknownFieldsTagged ''Foo)
+
+gFooParseJSONRejectUnknownFieldsTagged :: Value -> Parser Foo
+gFooParseJSONRejectUnknownFieldsTagged = genericParseJSON optsRejectUnknownFieldsTagged
+
+
+--------------------------------------------------------------------------------
+-- Option fields
+--------------------------------------------------------------------------------
+
+thOptionFieldToJSON :: OptionField -> Value
+thOptionFieldToJSON = $(mkToJSON optsOptionField 'OptionField)
+
+thOptionFieldToEncoding :: OptionField -> Encoding
+thOptionFieldToEncoding = $(mkToEncoding optsOptionField 'OptionField)
+
+thOptionFieldParseJSON :: Value -> Parser OptionField
+thOptionFieldParseJSON = $(mkParseJSON optsOptionField 'OptionField)
+
+gOptionFieldToJSON :: OptionField -> Value
+gOptionFieldToJSON = genericToJSON optsOptionField
+
+gOptionFieldToEncoding :: OptionField -> Encoding
+gOptionFieldToEncoding = genericToEncoding optsOptionField
+
+gOptionFieldParseJSON :: Value -> Parser OptionField
+gOptionFieldParseJSON = genericParseJSON optsOptionField
+
+thMaybeFieldToJSON :: MaybeField -> Value
+thMaybeFieldToJSON = $(mkToJSON optsOptionField 'MaybeField)
+
 
 --------------------------------------------------------------------------------
 -- IncoherentInstancesNeeded
@@ -252,6 +311,11 @@ incoherentInstancesNeededParseJSONString :: FromJSON a => Value -> Parser (Incoh
 incoherentInstancesNeededParseJSONString = case () of
   _ | True  -> $(mkParseJSON defaultOptions ''IncoherentInstancesNeeded)
     | False -> genericParseJSON defaultOptions
+
+incoherentInstancesNeededToJSON :: ToJSON a => IncoherentInstancesNeeded a -> Value
+incoherentInstancesNeededToJSON = case () of
+  _ | True  -> $(mkToJSON defaultOptions ''IncoherentInstancesNeeded)
+    | False -> genericToJSON defaultOptions
 #endif
 
 -------------------------------------------------------------------------------
@@ -382,3 +446,13 @@ gOneConstructorToEncodingTagged = genericToEncoding optsTagSingleConstructors
 
 gOneConstructorParseJSONTagged :: Value -> Parser OneConstructor
 gOneConstructorParseJSONTagged = genericParseJSON optsTagSingleConstructors
+
+--------------------------------------------------------------------------------
+-- Product2 encoders/decoders
+--------------------------------------------------------------------------------
+
+thProduct2ParseJSON :: Value -> Parser (Product2 Int Bool)
+thProduct2ParseJSON = $(mkParseJSON defaultOptions ''Product2)
+
+gProduct2ParseJSON :: Value -> Parser (Product2 Int Bool)
+gProduct2ParseJSON = genericParseJSON defaultOptions

@@ -1,10 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-#if MIN_VERSION_ghc_prim(0,3,1)
-{-# LANGUAGE MagicHash #-}
+#if __GLASGOW_HASKELL__ <= 710 && __GLASGOW_HASKELL__ >= 706
+-- Work around a compiler bug
+{-# OPTIONS_GHC -fsimpl-tick-factor=300 #-}
 #endif
-
 -- |
 -- Module:      Data.Aeson.Parser.Internal
 -- Copyright:   (c) 2011-2016 Bryan O'Sullivan
@@ -21,41 +22,55 @@ module Data.Aeson.Parser.Internal
     (
     -- * Lazy parsers
       json, jsonEOF
+    , jsonWith
+    , jsonLast
+    , jsonAccum
+    , jsonNoDup
     , value
     , jstring
+    , jstring_
+    , scientific
     -- * Strict parsers
     , json', jsonEOF'
+    , jsonWith'
+    , jsonLast'
+    , jsonAccum'
+    , jsonNoDup'
     , value'
     -- * Helpers
     , decodeWith
     , decodeStrictWith
     , eitherDecodeWith
     , eitherDecodeStrictWith
+    -- ** Handling objects with duplicate keys
+    , fromListAccum
+    , parseListNoDup
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Control.Applicative ((<|>))
 import Control.Monad (void, when)
-import Data.Aeson.Types.Internal (IResult(..), JSONPath, Result(..), Value(..))
+import Data.Aeson.Types.Internal (IResult(..), JSONPath, Object, Result(..), Value(..))
 import Data.Attoparsec.ByteString.Char8 (Parser, char, decimal, endOfInput, isDigit_w8, signed, string)
+import Data.Function (fix)
+import Data.Functor.Compat (($>))
 import Data.Scientific (Scientific)
 import Data.Text (Text)
-import Data.Vector as Vector (Vector, empty, fromListN, reverse)
+import qualified Data.Text.Encoding as TE
+import Data.Vector (Vector)
+import qualified Data.Vector as Vector (empty, fromList, fromListN, reverse)
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.Lazy as L
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
 import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.Char8 as C
+import qualified Data.ByteString.Builder as B
 import qualified Data.HashMap.Strict as H
 import qualified Data.Scientific as Sci
 import Data.Aeson.Parser.Unescape (unescapeText)
-
-#if MIN_VERSION_ghc_prim(0,3,1)
-import GHC.Base (Int#, (==#), isTrue#, word2Int#)
-import GHC.Word (Word8(W8#))
-#endif
 
 #define BACKSLASH 92
 #define CLOSE_CURLY 125
@@ -73,7 +88,7 @@ import GHC.Word (Word8(W8#))
 #define C_n 110
 #define C_t 116
 
--- | Parse a top-level JSON value.
+-- | Parse any JSON value.
 --
 -- The conversion of a parsed value to a Haskell value is deferred
 -- until the Haskell value is needed.  This may improve performance if
@@ -83,10 +98,15 @@ import GHC.Word (Word8(W8#))
 -- This function is an alias for 'value'. In aeson 0.8 and earlier, it
 -- parsed only object or array types, in conformance with the
 -- now-obsolete RFC 4627.
+--
+-- ==== Warning
+--
+-- If an object contains duplicate keys, only the first one will be kept.
+-- For a more flexible alternative, see 'jsonWith'.
 json :: Parser Value
 json = value
 
--- | Parse a top-level JSON value.
+-- | Parse any JSON value.
 --
 -- This is a strict version of 'json' which avoids building up thunks
 -- during parsing; it performs all conversions immediately.  Prefer
@@ -95,23 +115,35 @@ json = value
 -- This function is an alias for 'value''. In aeson 0.8 and earlier, it
 -- parsed only object or array types, in conformance with the
 -- now-obsolete RFC 4627.
+--
+-- ==== Warning
+--
+-- If an object contains duplicate keys, only the first one will be kept.
+-- For a more flexible alternative, see 'jsonWith''.
 json' :: Parser Value
 json' = value'
 
-object_ :: Parser Value
-object_ = {-# SCC "object_" #-} Object <$> objectValues jstring value
+-- Open recursion: object_, object_', array_, array_' are parameterized by the
+-- toplevel Value parser to be called recursively, to keep the parameter
+-- mkObject outside of the recursive loop for proper inlining.
 
-object_' :: Parser Value
-object_' = {-# SCC "object_'" #-} do
-  !vals <- objectValues jstring' value'
+object_ :: ([(Text, Value)] -> Either String Object) -> Parser Value -> Parser Value
+object_ mkObject val = {-# SCC "object_" #-} Object <$> objectValues mkObject jstring val
+{-# INLINE object_ #-}
+
+object_' :: ([(Text, Value)] -> Either String Object) -> Parser Value -> Parser Value
+object_' mkObject val' = {-# SCC "object_'" #-} do
+  !vals <- objectValues mkObject jstring' val'
   return (Object vals)
  where
   jstring' = do
     !s <- jstring
     return s
+{-# INLINE object_' #-}
 
-objectValues :: Parser Text -> Parser Value -> Parser (H.HashMap Text Value)
-objectValues str val = do
+objectValues :: ([(Text, Value)] -> Either String Object)
+             -> Parser Text -> Parser Value -> Parser (H.HashMap Text Value)
+objectValues mkObject str val = do
   skipSpace
   w <- A.peekWord8'
   if w == CLOSE_CURLY
@@ -121,22 +153,26 @@ objectValues str val = do
   -- Why use acc pattern here, you may ask? because 'H.fromList' use 'unsafeInsert'
   -- and it's much faster because it's doing in place update to the 'HashMap'!
   loop acc = do
-    k <- str <* skipSpace <* char ':'
-    v <- val <* skipSpace
-    ch <- A.satisfy $ \w -> w == COMMA || w == CLOSE_CURLY
+    k <- (str A.<?> "object key") <* skipSpace <* (char ':' A.<?> "':'")
+    v <- (val A.<?> "object value") <* skipSpace
+    ch <- A.satisfy (\w -> w == COMMA || w == CLOSE_CURLY) A.<?> "',' or '}'"
     let acc' = (k, v) : acc
     if ch == COMMA
       then skipSpace >> loop acc'
-      else return (H.fromList acc')
+      else case mkObject acc' of
+        Left err -> fail err
+        Right obj -> pure obj
 {-# INLINE objectValues #-}
 
-array_ :: Parser Value
-array_ = {-# SCC "array_" #-} Array <$> arrayValues value
+array_ :: Parser Value -> Parser Value
+array_ val = {-# SCC "array_" #-} Array <$> arrayValues val
+{-# INLINE array_ #-}
 
-array_' :: Parser Value
-array_' = {-# SCC "array_'" #-} do
-  !vals <- arrayValues value'
+array_' :: Parser Value -> Parser Value
+array_' val = {-# SCC "array_'" #-} do
+  !vals <- arrayValues val
   return (Array vals)
+{-# INLINE array_' #-}
 
 arrayValues :: Parser Value -> Parser (Vector Value)
 arrayValues val = do
@@ -147,57 +183,133 @@ arrayValues val = do
     else loop [] 1
   where
     loop acc !len = do
-      v <- val <* skipSpace
-      ch <- A.satisfy $ \w -> w == COMMA || w == CLOSE_SQUARE
+      v <- (val A.<?> "json list value") <* skipSpace
+      ch <- A.satisfy (\w -> w == COMMA || w == CLOSE_SQUARE) A.<?> "',' or ']'"
       if ch == COMMA
         then skipSpace >> loop (v:acc) (len+1)
         else return (Vector.reverse (Vector.fromListN len (v:acc)))
 {-# INLINE arrayValues #-}
 
--- | Parse any JSON value.  You should usually 'json' in preference to
--- this function, as this function relaxes the object-or-array
--- requirement of RFC 4627.
---
--- In particular, be careful in using this function if you think your
--- code might interoperate with Javascript.  A na&#xef;ve Javascript
--- library that parses JSON data using @eval@ is vulnerable to attack
--- unless the encoded data represents an object or an array.  JSON
--- implementations in other languages conform to that same restriction
--- to preserve interoperability and security.
+-- | Parse any JSON value. Synonym of 'json'.
 value :: Parser Value
-value = do
+value = jsonWith (pure . H.fromList)
+
+-- | Parse any JSON value.
+--
+-- This parser is parameterized by a function to construct an 'Object'
+-- from a raw list of key-value pairs, where duplicates are preserved.
+-- The pairs appear in __reverse order__ from the source.
+--
+-- ==== __Examples__
+--
+-- 'json' keeps only the first occurence of each key, using 'HashMap.Lazy.fromList'.
+--
+-- @
+-- 'json' = 'jsonWith' ('Right' '.' 'H.fromList')
+-- @
+--
+-- 'jsonLast' keeps the last occurence of each key, using
+-- @'HashMap.Lazy.fromListWith' ('const' 'id')@.
+--
+-- @
+-- 'jsonLast' = 'jsonWith' ('Right' '.' 'HashMap.Lazy.fromListWith' ('const' 'id'))
+-- @
+--
+-- 'jsonAccum' keeps wraps all values in arrays to keep duplicates, using
+-- 'fromListAccum'.
+--
+-- @
+-- 'jsonAccum' = 'jsonWith' ('Right' . 'fromListAccum')
+-- @
+--
+-- 'jsonNoDup' fails if any object contains duplicate keys, using 'parseListNoDup'.
+--
+-- @
+-- 'jsonNoDup' = 'jsonWith' 'parseListNoDup'
+-- @
+jsonWith :: ([(Text, Value)] -> Either String Object) -> Parser Value
+jsonWith mkObject = fix $ \value_ -> do
   skipSpace
   w <- A.peekWord8'
   case w of
     DOUBLE_QUOTE  -> A.anyWord8 *> (String <$> jstring_)
-    OPEN_CURLY    -> A.anyWord8 *> object_
-    OPEN_SQUARE   -> A.anyWord8 *> array_
-    C_f           -> string "false" *> pure (Bool False)
-    C_t           -> string "true" *> pure (Bool True)
-    C_n           -> string "null" *> pure Null
+    OPEN_CURLY    -> A.anyWord8 *> object_ mkObject value_
+    OPEN_SQUARE   -> A.anyWord8 *> array_ value_
+    C_f           -> string "false" $> Bool False
+    C_t           -> string "true" $> Bool True
+    C_n           -> string "null" $> Null
     _              | w >= 48 && w <= 57 || w == 45
                   -> Number <$> scientific
       | otherwise -> fail "not a valid json value"
+{-# INLINE jsonWith #-}
 
--- | Strict version of 'value'. See also 'json''.
+-- | Variant of 'json' which keeps only the last occurence of every key.
+jsonLast :: Parser Value
+jsonLast = jsonWith (Right . H.fromListWith (const id))
+
+-- | Variant of 'json' wrapping all object mappings in 'Array' to preserve
+-- key-value pairs with the same keys.
+jsonAccum :: Parser Value
+jsonAccum = jsonWith (Right . fromListAccum)
+
+-- | Variant of 'json' which fails if any object contains duplicate keys.
+jsonNoDup :: Parser Value
+jsonNoDup = jsonWith parseListNoDup
+
+-- | @'fromListAccum' kvs@ is an object mapping keys to arrays containing all
+-- associated values from the original list @kvs@.
+--
+-- >>> fromListAccum [("apple", Bool True), ("apple", Bool False), ("orange", Bool False)]
+-- fromList [("apple", [Bool False, Bool True]), ("orange", [Bool False])]
+fromListAccum :: [(Text, Value)] -> Object
+fromListAccum =
+  fmap (Array . Vector.fromList . ($ [])) . H.fromListWith (.) . (fmap . fmap) (:)
+
+-- | @'fromListNoDup' kvs@ fails if @kvs@ contains duplicate keys.
+parseListNoDup :: [(Text, Value)] -> Either String Object
+parseListNoDup =
+  H.traverseWithKey unwrap . H.fromListWith (\_ _ -> Nothing) . (fmap . fmap) Just
+  where
+    unwrap k Nothing = Left $ "found duplicate key: " ++ show k
+    unwrap _ (Just v) = Right v
+
+-- | Strict version of 'value'. Synonym of 'json''.
 value' :: Parser Value
-value' = do
+value' = jsonWith' (pure . H.fromList)
+
+-- | Strict version of 'jsonWith'.
+jsonWith' :: ([(Text, Value)] -> Either String Object) -> Parser Value
+jsonWith' mkObject = fix $ \value_ -> do
   skipSpace
   w <- A.peekWord8'
   case w of
     DOUBLE_QUOTE  -> do
                      !s <- A.anyWord8 *> jstring_
                      return (String s)
-    OPEN_CURLY    -> A.anyWord8 *> object_'
-    OPEN_SQUARE   -> A.anyWord8 *> array_'
-    C_f           -> string "false" *> pure (Bool False)
-    C_t           -> string "true" *> pure (Bool True)
-    C_n           -> string "null" *> pure Null
+    OPEN_CURLY    -> A.anyWord8 *> object_' mkObject value_
+    OPEN_SQUARE   -> A.anyWord8 *> array_' value_
+    C_f           -> string "false" $> Bool False
+    C_t           -> string "true" $> Bool True
+    C_n           -> string "null" $> Null
     _              | w >= 48 && w <= 57 || w == 45
                   -> do
                      !n <- scientific
                      return (Number n)
       | otherwise -> fail "not a valid json value"
+{-# INLINE jsonWith' #-}
+
+-- | Variant of 'json'' which keeps only the last occurence of every key.
+jsonLast' :: Parser Value
+jsonLast' = jsonWith' (pure . H.fromListWith (const id))
+
+-- | Variant of 'json'' wrapping all object mappings in 'Array' to preserve
+-- key-value pairs with the same keys.
+jsonAccum' :: Parser Value
+jsonAccum' = jsonWith' (pure . fromListAccum)
+
+-- | Variant of 'json'' which fails if any object contains duplicate keys.
+jsonNoDup' :: Parser Value
+jsonNoDup' = jsonWith' parseListNoDup
 
 -- | Parse a quoted JSON string.
 jstring :: Parser Text
@@ -206,24 +318,26 @@ jstring = A.word8 DOUBLE_QUOTE *> jstring_
 -- | Parse a string without a leading quote.
 jstring_ :: Parser Text
 {-# INLINE jstring_ #-}
-jstring_ = {-# SCC "jstring_" #-} do
+jstring_ = do
+  -- not sure whether >= or bit hackery is faster
+  -- perfectly, we shouldn't care, it's compiler job.
+  s <- A.takeWhile (\w -> w /= DOUBLE_QUOTE && w /= BACKSLASH && w >= 0x20 && w < 0x80)
+  let txt = TE.decodeUtf8 s
+  mw <- A.peekWord8
+  case mw of
+    Nothing           -> fail "string without end"
+    Just DOUBLE_QUOTE -> A.anyWord8 $> txt
+    Just w | w < 0x20 -> fail "unescaped control character"
+    _                 -> jstringSlow s
+
+jstringSlow :: B.ByteString -> Parser Text
+{-# INLINE jstringSlow #-}
+jstringSlow s' = {-# SCC "jstringSlow" #-} do
   s <- A.scan startState go <* A.anyWord8
-  case unescapeText s of
+  case unescapeText (B.append s' s) of
     Right r  -> return r
     Left err -> fail $ show err
  where
-#if MIN_VERSION_ghc_prim(0,3,1)
-    startState              = S 0#
-    go (S a) (W8# c)
-      | isTrue# a                     = Just (S 0#)
-      | isTrue# (word2Int# c ==# 34#) = Nothing   -- double quote
-      | otherwise = let a' = word2Int# c ==# 92#  -- backslash
-                    in Just (S a')
-
-data S = S Int#
--- This hint will no longer trigger once hlint > 1.9.41 is released.
-{-# ANN S ("HLint: ignore Use newtype instead of data" :: String) #-}
-#else
     startState              = False
     go a c
       | a                  = Just False
@@ -231,7 +345,6 @@ data S = S Int#
       | otherwise = let a' = c == backslash
                     in Just a'
       where backslash = BACKSLASH
-#endif
 
 decodeWith :: Parser Value -> (Value -> Result a) -> L.ByteString -> Maybe a
 decodeWith p to s =
@@ -257,8 +370,34 @@ eitherDecodeWith p to s =
       L.Done _ v     -> case to v of
                           ISuccess a      -> Right a
                           IError path msg -> Left (path, msg)
-      L.Fail _ _ msg -> Left ([], msg)
+      L.Fail notparsed ctx msg -> Left ([], buildMsg notparsed ctx msg)
+  where
+    buildMsg :: L.ByteString -> [String] -> String -> String
+    buildMsg notYetParsed [] msg = msg ++ formatErrorLine notYetParsed
+    buildMsg notYetParsed (expectation:_) msg =
+      msg ++ ". Expecting " ++ expectation ++ formatErrorLine notYetParsed
 {-# INLINE eitherDecodeWith #-}
+
+-- | Grab the first 100 bytes from the non parsed portion and
+-- format to get nicer error messages
+formatErrorLine :: L.ByteString -> String
+formatErrorLine bs =
+  C.unpack .
+  -- if formatting results in empty ByteString just return that
+  -- otherwise construct the error message with the bytestring builder
+  (\bs' ->
+     if BSL.null bs'
+       then BSL.empty
+       else
+         B.toLazyByteString $
+         B.stringUtf8 " at '" <> B.lazyByteString bs' <> B.stringUtf8 "'"
+  ) .
+  -- if newline is present cut at that position
+  BSL.takeWhile (10 /=) .
+  -- remove spaces, CR's, tabs, backslashes and quotes characters
+  BSL.filter (`notElem` [9, 13, 32, 34, 47, 92]) .
+  -- take 100 bytes
+  BSL.take 100 $ bs
 
 eitherDecodeStrictWith :: Parser Value -> (Value -> IResult a) -> B.ByteString
                        -> Either (JSONPath, String) a
@@ -310,14 +449,13 @@ data SP = SP !Integer {-# UNPACK #-}!Int
 
 decimal0 :: Parser Integer
 decimal0 = do
-  let step a w = a * 10 + fromIntegral (w - zero)
-      zero = 48
+  let zero = 48
   digits <- A.takeWhile1 isDigit_w8
   if B.length digits > 1 && B.unsafeHead digits == zero
     then fail "leading zero"
-    else return (B.foldl' step 0 digits)
+    else return (bsToInteger digits)
 
-{-# INLINE scientific #-}
+-- | Parse a JSON number.
 scientific :: Parser Scientific
 scientific = do
   let minus = 45
@@ -347,3 +485,54 @@ scientific = do
   (A.satisfy (\ex -> ex == littleE || ex == bigE) *>
       fmap (Sci.scientific signedCoeff . (e +)) (signed decimal)) <|>
     return (Sci.scientific signedCoeff    e)
+{-# INLINE scientific #-}
+
+------------------ Copy-pasted and adapted from base ------------------------
+
+bsToInteger :: B.ByteString -> Integer
+bsToInteger bs
+    | l > 40    = valInteger 10 l [ fromIntegral (w - 48) | w <- B.unpack bs ]
+    | otherwise = bsToIntegerSimple bs
+  where
+    l = B.length bs
+
+bsToIntegerSimple :: B.ByteString -> Integer
+bsToIntegerSimple = B.foldl' step 0 where
+  step a b = a * 10 + fromIntegral (b - 48) -- 48 = '0'
+
+-- A sub-quadratic algorithm for Integer. Pairs of adjacent radix b
+-- digits are combined into a single radix b^2 digit. This process is
+-- repeated until we are left with a single digit. This algorithm
+-- performs well only on large inputs, so we use the simple algorithm
+-- for smaller inputs.
+valInteger :: Integer -> Int -> [Integer] -> Integer
+valInteger = go
+  where
+    go :: Integer -> Int -> [Integer] -> Integer
+    go _ _ []  = 0
+    go _ _ [d] = d
+    go b l ds
+        | l > 40 = b' `seq` go b' l' (combine b ds')
+        | otherwise = valSimple b ds
+      where
+        -- ensure that we have an even number of digits
+        -- before we call combine:
+        ds' = if even l then ds else 0 : ds
+        b' = b * b
+        l' = (l + 1) `quot` 2
+
+    combine b (d1 : d2 : ds) = d `seq` (d : combine b ds)
+      where
+        d = d1 * b + d2
+    combine _ []  = []
+    combine _ [_] = errorWithoutStackTrace "this should not happen"
+
+-- The following algorithm is only linear for types whose Num operations
+-- are in constant time.
+valSimple :: Integer -> [Integer] -> Integer
+valSimple base = go 0
+  where
+    go r [] = r
+    go r (d : ds) = r' `seq` go r' ds
+      where
+        r' = r * base + fromIntegral d

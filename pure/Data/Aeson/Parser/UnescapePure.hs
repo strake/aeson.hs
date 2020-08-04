@@ -97,38 +97,18 @@ decode UtfTail1 word = case word of
     w | 0x80 <= w && w <= 0xbf -> StateNone
     _                          -> throwDecodeError
 
-{-# INLINE decode #-}
-
 decodeHex :: Word8 -> Word16
-decodeHex 48  = 0  -- '0'
-decodeHex 49  = 1  -- '1'
-decodeHex 50  = 2  -- '2'
-decodeHex 51  = 3  -- '3'
-decodeHex 52  = 4  -- '4'
-decodeHex 53  = 5  -- '5'
-decodeHex 54  = 6  -- '6'
-decodeHex 55  = 7  -- '7'
-decodeHex 56  = 8  -- '8'
-decodeHex 57  = 9  -- '9'
-decodeHex 65  = 10 -- 'A'
-decodeHex 97  = 10 -- 'a'
-decodeHex 66  = 11 -- 'B'
-decodeHex 98  = 11 -- 'b'
-decodeHex 67  = 12 -- 'C'
-decodeHex 99  = 12 -- 'c'
-decodeHex 68  = 13 -- 'D'
-decodeHex 100 = 13 -- 'd'
-decodeHex 69  = 14 -- 'E'
-decodeHex 101 = 14 -- 'e'
-decodeHex 70  = 15 -- 'F'
-decodeHex 102 = 15 -- 'f'
-decodeHex _ = throwDecodeError
-{-# INLINE decodeHex #-}
+decodeHex x
+  | 48 <= x && x <=  57 = fromIntegral x - 48  -- 0-9
+  | 65 <= x && x <=  70 = fromIntegral x - 55  -- A-F
+  | 97 <= x && x <= 102 = fromIntegral x - 87  -- a-f
+  | otherwise = throwDecodeError
 
 unescapeText' :: ByteString -> Text
 unescapeText' bs = runText $ \done -> do
     dest <- A.new len
-    (pos, finalState) <- B.foldl' (f' dest) (return (0, StateNone)) bs
+
+    (pos, finalState) <- loop dest (0, StateNone) 0
 
     -- Check final state. Currently pos gets only increased over time, so this check should catch overflows.
     when ( finalState /= StateNone || pos > len)
@@ -139,8 +119,12 @@ unescapeText' bs = runText $ \done -> do
     where
       len = B.length bs
 
-      f' dest m c = m >>= \s -> f dest s c
-      {-# INLINE f' #-}
+      loop :: A.MArray s -> (Int, State) -> Int -> ST s (Int, State)
+      loop _ ps i | i >= len = return ps
+      loop dest ps i = do
+        let c = B.index bs i -- JP: We can use unsafe index once we prove bounds with Liquid Haskell.
+        ps' <- f dest ps c
+        loop dest ps' $ i+1
 
       -- No pending state.
       f    _ (pos, StateNone) 92 = return (pos, StateBackslash)
@@ -215,20 +199,15 @@ unescapeText' bs = runText $ \done -> do
         else
           writeAndReturn dest pos (U16.chr2 u u2) StateNone
 
-      {-# INLINE f #-}
-
 writeAndReturn :: A.MArray s -> Int -> Char -> t -> ST s (Int, t)
-writeAndReturn dest pos char res = do
-    i <- C.unsafeWrite dest pos char
-    return (pos + i, res)
+writeAndReturn dest pos char res =
+    (\ i -> (pos + i, res)) <$> C.unsafeWrite dest pos char
 {-# INLINE writeAndReturn #-}
 
 throwDecodeError :: a
 throwDecodeError =
     let desc = "Data.Text.Internal.Encoding.decodeUtf8: Invalid UTF-8 stream" in
     throw (DecodeError desc Nothing)
-{-# INLINE throwDecodeError #-}
 
 unescapeText :: ByteString -> Either UnicodeException Text
 unescapeText = unsafeDupablePerformIO . try . evaluate . unescapeText'
-{-# INLINE unescapeText #-}

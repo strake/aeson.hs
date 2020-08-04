@@ -1,9 +1,10 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
 module Main (main) where
 
-import Prelude ()
 import Prelude.Compat
 
-import Test.Framework (defaultMain)
+import Test.Tasty (defaultMain, testGroup)
 import qualified DataFamilies.Properties as DF
 import qualified Properties
 import qualified UnitTests
@@ -11,4 +12,5 @@ import qualified UnitTests
 main :: IO ()
 main = do
     ioTests <- UnitTests.ioTests
-    defaultMain (DF.tests : Properties.tests : UnitTests.tests : ioTests)
+    let allTests = DF.tests : Properties.tests : UnitTests.tests : ioTests
+    defaultMain (testGroup "tests" allTests)

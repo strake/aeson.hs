@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- |
 -- Module:      Data.Aeson.Text
@@ -14,18 +15,17 @@
 --
 -- You can use the conversions to 'Builder's when embedding JSON messages as
 -- parts of a protocol.
+
 module Data.Aeson.Text
     (
       encodeToLazyText
     , encodeToTextBuilder
     ) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Data.Aeson.Types (Value(..), ToJSON(..))
 import Data.Aeson.Encoding (encodingToLazyByteString)
-import Data.Monoid ((<>))
 import Data.Scientific (FPFormat(..), Scientific, base10Exponent)
 import Data.Text.Lazy.Builder
 import Data.Text.Lazy.Builder.Scientific (formatScientificBuilder)
@@ -46,8 +46,8 @@ encodeToLazyText = LT.decodeUtf8 . encodingToLazyByteString . toEncoding
 -- embedded efficiently in a text-based protocol.
 --
 -- If you are going to immediately encode straight to a
--- 'L.ByteString', it is more efficient to use 'encodeToBuilder'
--- instead.
+-- 'L.ByteString', it is more efficient to use 'encode' (lazy ByteString)
+-- or @'fromEncoding' . 'toEncoding'@ (ByteString.Builder) instead.
 --
 -- /Note:/ Uses 'toJSON'
 encodeToTextBuilder :: ToJSON a => a -> Builder

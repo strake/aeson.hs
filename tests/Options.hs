@@ -1,6 +1,7 @@
+{-# LANGUAGE NoImplicitPrelude #-}
+
 module Options (module Options) where
 
-import Prelude ()
 import Prelude.Compat
 
 import Data.Aeson.Types
@@ -48,3 +49,20 @@ optsTagSingleConstructors = optsDefault
                             { tagSingleConstructors = True
                             , allNullaryToStringTag = False
                             }
+
+optsOptionField :: Options
+optsOptionField = optsDefault
+                  { fieldLabelModifier = const "field"
+                  , omitNothingFields = True
+                  }
+
+optsRejectUnknownFields :: Options
+optsRejectUnknownFields = optsDefault
+                          { rejectUnknownFields = True
+                          }
+
+optsRejectUnknownFieldsTagged :: Options
+optsRejectUnknownFieldsTagged = optsDefault
+                                { rejectUnknownFields = True
+                                , tagSingleConstructors = True
+                                }

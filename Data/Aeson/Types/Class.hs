@@ -4,8 +4,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 -- |
 -- Module:      Data.Aeson.Types.Class
@@ -39,6 +39,7 @@ module Data.Aeson.Types.Class
     , FromArgs(..)
     , GToJSON
     , GToEncoding
+    , GToJSON'
     , ToArgs(..)
     , Zero
     , One
@@ -58,6 +59,11 @@ module Data.Aeson.Types.Class
     , fromJSONKeyCoerce
     , coerceFromJSONKeyFunction
     , mapFromJSONKeyFunction
+    -- ** Generic keys
+    , GToJSONKey()
+    , genericToJSONKey
+    , GFromJSONKey()
+    , genericFromJSONKey
     -- * Object key-value pairs
     , KeyValue(..)
 
@@ -70,14 +76,15 @@ module Data.Aeson.Types.Class
     , withObject
     , withText
     , withArray
-    , withNumber
     , withScientific
     , withBool
+    , withEmbeddedJSON
 
     -- * Functions
     , fromJSON
     , ifromJSON
     , typeMismatch
+    , unexpected
     , parseField
     , parseFieldMaybe
     , parseFieldMaybe'
@@ -91,14 +98,12 @@ module Data.Aeson.Types.Class
     , (.!=)
     ) where
 
-import Prelude ()
 
 import Data.Aeson.Types.FromJSON
 import Data.Aeson.Types.Generic (One, Zero)
-import Data.Aeson.Types.ToJSON hiding (GToJSON)
-import qualified Data.Aeson.Types.ToJSON as ToJSON
+import Data.Aeson.Types.ToJSON
 import Data.Aeson.Types.Internal (Value)
 import Data.Aeson.Encoding (Encoding)
 
-type GToJSON = ToJSON.GToJSON Value
-type GToEncoding = ToJSON.GToJSON Encoding
+type GToJSON = GToJSON' Value
+type GToEncoding = GToJSON' Encoding
