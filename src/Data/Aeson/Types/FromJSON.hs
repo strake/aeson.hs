@@ -87,12 +87,12 @@ import Data.Aeson.Parser.Internal (eitherDecodeWith, jsonEOF)
 import Data.Aeson.Types.Generic
 import Data.Aeson.Types.Internal
 import Data.Bits (unsafeShiftR)
+import Data.Either.Both (Either' (..))
 import Data.Fixed (Fixed, HasResolution (resolution), Nano)
 import Data.Functor.Compose (Compose(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Product (Product(..))
 import Data.Functor.Sum (Sum(..))
-import Data.Functor.These (These1 (..))
 import Data.Hashable (Hashable(..))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List.NonEmpty (NonEmpty(..))
@@ -102,7 +102,6 @@ import Data.Ratio ((%), Ratio)
 import Data.Scientific (Scientific, base10Exponent)
 import Data.Tagged (Tagged(..))
 import Data.Text (Text, pack, unpack)
-import Data.These (These (..))
 import Data.Time (Day, DiffTime, LocalTime, NominalDiffTime, TimeOfDay, UTCTime, ZonedTime)
 import Data.Time.Calendar.Compat (CalendarDiffDays (..), DayOfWeek (..))
 import Data.Time.Calendar.Month.Compat (Month)
@@ -2286,15 +2285,15 @@ instance (FromJSON1 f, Functor f) => FromJSON (F.Nu f) where
 -------------------------------------------------------------------------------
 
 -- | @since 1.5.3.0
-instance (FromJSON a, FromJSON b) => FromJSON (S.These a b) where
+instance (FromJSON a, FromJSON b) => FromJSON (S.Either' a b) where
     parseJSON = fmap S.toStrict . parseJSON
 
 -- | @since 1.5.3.0
-instance FromJSON2 S.These where
+instance FromJSON2 S.Either' where
     liftParseJSON2 pa pas pb pbs = fmap S.toStrict . liftParseJSON2 pa pas pb pbs
 
 -- | @since 1.5.3.0
-instance FromJSON a => FromJSON1 (S.These a) where
+instance FromJSON a => FromJSON1 (S.Either' a) where
     liftParseJSON pa pas = fmap S.toStrict . liftParseJSON pa pas
 
 -- | @since 1.5.3.0
@@ -2362,52 +2361,38 @@ instance FromJSONKey b => FromJSONKey (Tagged a b) where
     fromJSONKeyList = (fmap . fmap) Tagged fromJSONKeyList
 
 -------------------------------------------------------------------------------
--- these
+-- either'
 -------------------------------------------------------------------------------
 
 -- | @since 1.5.1.0
-instance (FromJSON a, FromJSON b) => FromJSON (These a b) where
-    parseJSON = withObject "These a b" (p . H.toList)
+instance (FromJSON a, FromJSON b) => FromJSON (Either' a b) where
+    parseJSON = withObject "Either' a b" (p . H.toList)
       where
-        p [("This", a), ("That", b)] = These <$> parseJSON a <*> parseJSON b
-        p [("That", b), ("This", a)] = These <$> parseJSON a <*> parseJSON b
-        p [("This", a)] = This <$> parseJSON a
-        p [("That", b)] = That <$> parseJSON b
+        p [("This", a), ("That", b)] = Both <$> parseJSON a <*> parseJSON b
+        p [("That", b), ("This", a)] = Both <$> parseJSON a <*> parseJSON b
+        p [("This", a)] = JustLeft <$> parseJSON a
+        p [("That", b)] = JustRight <$> parseJSON b
         p _  = fail "Expected object with 'This' and 'That' keys only"
 
 -- | @since 1.5.1.0
-instance FromJSON a => FromJSON1 (These a) where
-    liftParseJSON pb _ = withObject "These a b" (p . H.toList)
+instance FromJSON a => FromJSON1 (Either' a) where
+    liftParseJSON pb _ = withObject "Either' a b" (p . H.toList)
       where
-        p [("This", a), ("That", b)] = These <$> parseJSON a <*> pb b
-        p [("That", b), ("This", a)] = These <$> parseJSON a <*> pb b
-        p [("This", a)] = This <$> parseJSON a
-        p [("That", b)] = That <$> pb b
+        p [("This", a), ("That", b)] = Both <$> parseJSON a <*> pb b
+        p [("That", b), ("This", a)] = Both <$> parseJSON a <*> pb b
+        p [("This", a)] = JustLeft <$> parseJSON a
+        p [("That", b)] = JustRight <$> pb b
         p _  = fail "Expected object with 'This' and 'That' keys only"
 
 -- | @since 1.5.1.0
-instance FromJSON2 These where
-    liftParseJSON2 pa _ pb _ = withObject "These a b" (p . H.toList)
+instance FromJSON2 Either' where
+    liftParseJSON2 pa _ pb _ = withObject "Either' a b" (p . H.toList)
       where
-        p [("This", a), ("That", b)] = These <$> pa a <*> pb b
-        p [("That", b), ("This", a)] = These <$> pa a <*> pb b
-        p [("This", a)] = This <$> pa a
-        p [("That", b)] = That <$> pb b
+        p [("This", a), ("That", b)] = Both <$> pa a <*> pb b
+        p [("That", b), ("This", a)] = Both <$> pa a <*> pb b
+        p [("This", a)] = JustLeft <$> pa a
+        p [("That", b)] = JustRight <$> pb b
         p _  = fail "Expected object with 'This' and 'That' keys only"
-
--- | @since 1.5.1.0
-instance (FromJSON1 f, FromJSON1 g) => FromJSON1 (These1 f g) where
-    liftParseJSON px pl = withObject "These1" (p . H.toList)
-      where
-        p [("This", a), ("That", b)] = These1 <$> liftParseJSON px pl a <*> liftParseJSON px pl b
-        p [("That", b), ("This", a)] = These1 <$> liftParseJSON px pl a <*> liftParseJSON px pl b
-        p [("This", a)] = This1 <$> liftParseJSON px pl a
-        p [("That", b)] = That1 <$> liftParseJSON px pl b
-        p _  = fail "Expected object with 'This' and 'That' keys only"
-
--- | @since 1.5.1.0
-instance (FromJSON1 f, FromJSON1 g, FromJSON a) => FromJSON (These1 f g a) where
-    parseJSON = parseJSON1
 
 -------------------------------------------------------------------------------
 -- Instances for converting from map keys

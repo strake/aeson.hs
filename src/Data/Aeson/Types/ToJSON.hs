@@ -69,6 +69,7 @@ import Data.Aeson.Types.Internal
 import Data.Attoparsec.Number (Number(..))
 import Data.Bits (unsafeShiftR)
 import Data.DList (DList)
+import Data.Either.Both (Either' (..))
 import Data.Fixed (Fixed, HasResolution, Nano)
 import Data.Foldable (toList)
 import Data.Functor.Compose (Compose(..))
@@ -76,7 +77,6 @@ import Data.Functor.Contravariant (Contravariant (..))
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Product (Product(..))
 import Data.Functor.Sum (Sum(..))
-import Data.Functor.These (These1 (..))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty(..))
@@ -85,7 +85,6 @@ import Data.Ratio (Ratio, denominator, numerator)
 import Data.Scientific (Scientific)
 import Data.Tagged (Tagged(..))
 import Data.Text (Text, pack)
-import Data.These (These (..))
 import Data.Time (Day, DiffTime, LocalTime, NominalDiffTime, TimeOfDay, UTCTime, ZonedTime)
 import Data.Time.Calendar.Month.Compat (Month)
 import Data.Time.Calendar.Quarter.Compat (Quarter, QuarterOfYear (..))
@@ -2310,17 +2309,17 @@ instance (ToJSON1 f, Functor f) => ToJSON (F.Nu f) where
 -------------------------------------------------------------------------------
 
 -- | @since 1.5.3.0
-instance (ToJSON a, ToJSON b) => ToJSON (S.These a b) where
+instance (ToJSON a, ToJSON b) => ToJSON (S.Either' a b) where
     toJSON = toJSON . S.toLazy
     toEncoding = toEncoding . S.toLazy
 
 -- | @since 1.5.3.0
-instance ToJSON2 S.These where
+instance ToJSON2 S.Either' where
     liftToJSON2 toa toas tob tobs = liftToJSON2 toa toas tob tobs . S.toLazy
     liftToEncoding2 toa toas tob tobs = liftToEncoding2 toa toas tob tobs . S.toLazy
 
 -- | @since 1.5.3.0
-instance ToJSON a => ToJSON1 (S.These a) where
+instance ToJSON a => ToJSON1 (S.Either' a) where
     liftToJSON toa tos = liftToJSON toa tos . S.toLazy
     liftToEncoding toa tos = liftToEncoding toa tos . S.toLazy
 
@@ -2409,55 +2408,38 @@ instance ToJSONKey b => ToJSONKey (Tagged a b) where
     toJSONKeyList = contramapToJSONKeyFunction (fmap unTagged) toJSONKeyList
 
 -------------------------------------------------------------------------------
--- these
+-- either'
 -------------------------------------------------------------------------------
 
 -- | @since 1.5.1.0
-instance (ToJSON a, ToJSON b) => ToJSON (These a b) where
-    toJSON (This a)    = object [ "This" .= a ]
-    toJSON (That b)    = object [ "That" .= b ]
-    toJSON (These a b) = object [ "This" .= a, "That" .= b ]
+instance (ToJSON a, ToJSON b) => ToJSON (Either' a b) where
+    toJSON (JustLeft a)    = object [ "JustLeft" .= a ]
+    toJSON (JustRight b)    = object [ "JustRight" .= b ]
+    toJSON (Both a b) = object [ "JustLeft" .= a, "JustRight" .= b ]
 
-    toEncoding (This a)    = E.pairs $ "This" .= a
-    toEncoding (That b)    = E.pairs $ "That" .= b
-    toEncoding (These a b) = E.pairs $ "This" .= a <> "That" .= b
-
--- | @since 1.5.1.0
-instance ToJSON2 These where
-    liftToJSON2  toa _ _tob _ (This a)    = object [ "This" .= toa a ]
-    liftToJSON2 _toa _  tob _ (That b)    = object [ "That" .= tob b ]
-    liftToJSON2  toa _  tob _ (These a b) = object [ "This" .= toa a, "That" .= tob b ]
-
-    liftToEncoding2  toa _ _tob _ (This a)    = E.pairs $ E.pair "This" (toa a)
-    liftToEncoding2 _toa _  tob _ (That b)    = E.pairs $ E.pair "That" (tob b)
-    liftToEncoding2  toa _  tob _ (These a b) = E.pairs $ E.pair "This" (toa a) <> E.pair "That" (tob b)
+    toEncoding (JustLeft a)    = E.pairs $ "JustLeft" .= a
+    toEncoding (JustRight b)    = E.pairs $ "JustRight" .= b
+    toEncoding (Both a b) = E.pairs $ "JustLeft" .= a <> "JustRight" .= b
 
 -- | @since 1.5.1.0
-instance ToJSON a => ToJSON1 (These a) where
-    liftToJSON _tob _ (This a)    = object [ "This" .= a ]
-    liftToJSON  tob _ (That b)    = object [ "That" .= tob b ]
-    liftToJSON  tob _ (These a b) = object [ "This" .= a, "That" .= tob b ]
+instance ToJSON2 Either' where
+    liftToJSON2  toa _ _tob _ (JustLeft a)    = object [ "JustLeft" .= toa a ]
+    liftToJSON2 _toa _  tob _ (JustRight b)    = object [ "JustRight" .= tob b ]
+    liftToJSON2  toa _  tob _ (Both a b) = object [ "JustLeft" .= toa a, "JustRight" .= tob b ]
 
-    liftToEncoding _tob _ (This a)    = E.pairs $ "This" .= a
-    liftToEncoding  tob _ (That b)    = E.pairs $ E.pair "That" (tob b)
-    liftToEncoding  tob _ (These a b) = E.pairs $ "This" .= a <> E.pair "That" (tob b)
-
--- | @since 1.5.1.0
-instance (ToJSON1 f, ToJSON1 g) => ToJSON1 (These1 f g) where
-    liftToJSON tx tl (This1 a)    = object [ "This" .= liftToJSON tx tl a ]
-    liftToJSON tx tl (That1 b)    = object [ "That" .= liftToJSON tx tl b ]
-    liftToJSON tx tl (These1 a b) = object [ "This" .= liftToJSON tx tl a, "That" .= liftToJSON tx tl b ]
-
-    liftToEncoding tx tl (This1 a)    = E.pairs $ E.pair "This" (liftToEncoding tx tl a)
-    liftToEncoding tx tl (That1 b)    = E.pairs $ E.pair "That" (liftToEncoding tx tl b)
-    liftToEncoding tx tl (These1 a b) = E.pairs $
-        pair "This" (liftToEncoding tx tl a) `mappend`
-        pair "That" (liftToEncoding tx tl b)
+    liftToEncoding2  toa _ _tob _ (JustLeft a)    = E.pairs $ E.pair "JustLeft" (toa a)
+    liftToEncoding2 _toa _  tob _ (JustRight b)    = E.pairs $ E.pair "JustRight" (tob b)
+    liftToEncoding2  toa _  tob _ (Both a b) = E.pairs $ E.pair "JustLeft" (toa a) <> E.pair "JustRight" (tob b)
 
 -- | @since 1.5.1.0
-instance (ToJSON1 f, ToJSON1 g, ToJSON a) => ToJSON (These1 f g a) where
-    toJSON     = toJSON1
-    toEncoding = toEncoding1
+instance ToJSON a => ToJSON1 (Either' a) where
+    liftToJSON _tob _ (JustLeft a)    = object [ "JustLeft" .= a ]
+    liftToJSON  tob _ (JustRight b)    = object [ "JustRight" .= tob b ]
+    liftToJSON  tob _ (Both a b) = object [ "JustLeft" .= a, "JustRight" .= tob b ]
+
+    liftToEncoding _tob _ (JustLeft a)    = E.pairs $ "JustLeft" .= a
+    liftToEncoding  tob _ (JustRight b)    = E.pairs $ E.pair "JustRight" (tob b)
+    liftToEncoding  tob _ (Both a b) = E.pairs $ "JustLeft" .= a <> E.pair "JustRight" (tob b)
 
 -------------------------------------------------------------------------------
 -- Instances for converting t map keys
